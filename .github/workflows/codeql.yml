@@ -1,4 +1,4 @@
-name: CodeQL
+name: Anàlisi CodeQL
 
 on:
   push:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analitza (${{ matrix.language }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,15 +23,15 @@ jobs:
         language: ["python", "javascript-typescript"]
 
     steps:
-      - name: Checkout
+      - name: Obté el repositori
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Initialize CodeQL
+      - name: Inicialitza CodeQL
         uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           languages: ${{ matrix.language }}
 
-      - name: Analyze
+      - name: Analitza
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           category: "/language:${{ matrix.language }}"
