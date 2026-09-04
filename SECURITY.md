@@ -1,57 +1,57 @@
-# Security Policy
+# Política de seguretat
 
-## Supported versions
+## Versions compatibles
 
-Ferrocat/Catatrens is currently developed as a continuously deployed application rather than a set of maintained release branches.
+Ferrocat es desenvolupa actualment com una aplicació desplegada de manera contínua. La versió actual és la **1.0**.
 
-| Version | Security support |
+| Versió | Suport de seguretat |
 | --- | --- |
-| Current `main` / latest deployed version | Yes |
-| Older commits, forks or local snapshots | No guaranteed support |
+| `1.0` / `main` actual / darrer desplegament | Sí |
+| Commits antics, forks o còpies locals | Sense suport garantit |
 
-Security fixes are prepared on a branch or pull request, reviewed, and then merged into `main` when accepted.
+Les correccions de seguretat es preparen en una branca o pull request, es revisen i s'integren a `main` quan s'accepten.
 
-## Reporting a vulnerability
+## Comunicació d'una vulnerabilitat
 
-Please do **not** publish exploit details, credentials, tokens, private data, or a serious vulnerability in a public GitHub issue.
+No publiquis detalls d'explotació, credencials, tokens, dades privades ni vulnerabilitats greus en una issue pública de GitHub.
 
-Preferred channel:
+Canal preferent:
 
-1. Use **GitHub Private Vulnerability Reporting** for this repository if it is enabled.
-2. If private vulnerability reporting is not available, open a minimal public issue asking the maintainer for a private reporting channel, without including exploit details or sensitive material.
+1. Utilitza **GitHub Private Vulnerability Reporting** per a aquest repositori si està habilitat.
+2. Si no està disponible, obre una issue pública mínima demanant un canal privat, sense incloure detalls d'explotació ni informació sensible.
 
-Do not send secrets through screenshots or public logs.
+No enviïs secrets en captures de pantalla ni registres públics.
 
-A useful report should include:
+Un informe útil hauria d'incloure:
 
-- affected component and file/path;
-- impact and realistic attack scenario;
-- prerequisites for exploitation;
-- reproducible steps or a minimal proof of concept;
-- affected version/commit if known;
-- suggested mitigation if available;
-- whether the issue is already public elsewhere.
+- component i fitxer o ruta afectats;
+- impacte i escenari d'atac realista;
+- requisits previs per explotar-lo;
+- passos reproduïbles o una prova de concepte mínima;
+- versió o commit afectat, si es coneix;
+- mitigació suggerida, si n'hi ha;
+- si el problema ja és públic en algun altre lloc.
 
-## Responsible disclosure
+## Divulgació responsable
 
-Please allow reasonable time to reproduce, assess and remediate a reported issue before public disclosure. The maintainer may ask for additional technical information or a reduced proof of concept.
+Dona un temps raonable per reproduir, avaluar i corregir el problema abans de divulgar-lo públicament. El mantenidor pot demanar informació tècnica addicional o una prova de concepte reduïda.
 
-Reports made in good faith to improve the security of the project are welcome. Do not access, modify or destroy data that you do not own, disrupt the public service, attempt credential theft, or perform denial-of-service testing against production infrastructure.
+Els informes fets de bona fe per millorar la seguretat del projecte són benvinguts. No accedeixis, modifiquis ni destrueixis dades que no siguin teves, no interrompis el servei públic, no intentis robar credencials i no facis proves de denegació de servei contra infraestructura de producció.
 
-## Security scope
+## Abast de seguretat
 
-The current application intentionally has a small server-side attack surface: it has no user accounts, no SQL database, no file upload endpoint and no user-controlled server-side persistence. Public MITMS/Idescat/ICGC/OSM-derived data is delivered to the browser by design.
+La versió 1.0 de Ferrocat té deliberadament una superfície de servidor petita: no hi ha comptes d'usuari, base de dades SQL, pujada de fitxers ni persistència de servidor controlada pels visitants. Les dades públiques derivades de MITMS, Idescat, ICGC i OSM s'envien al navegador per disseny.
 
-Everything passed to the Streamlit browser component must be considered public. API keys, credentials and private data must never be included in that payload or committed to the frontend.
+Tot el que es passa al component de Streamlit s'ha de considerar públic. No hi incloguis mai claus API, credencials, tokens ni dades privades.
 
-## Automated controls
+## Controls automatitzats
 
-The repository contains workflows for:
+El repositori inclou:
 
-- Python dependency auditing with `pip-audit`;
-- Python tests and compilation checks;
-- CodeQL analysis for Python and JavaScript/TypeScript;
-- Gitleaks secret scanning;
-- Dependabot update pull requests.
+- auditoria de dependències Python amb `pip-audit`;
+- tests Python i comprovacions de compilació;
+- CodeQL per Python i JavaScript/TypeScript;
+- Gitleaks per detectar secrets;
+- Dependabot per obrir pull requests d'actualització.
 
-Repository settings such as branch rules, GitHub secret scanning, push protection and private vulnerability reporting must still be enabled manually in GitHub where available.
+Les regles de branca, l'escaneig de secrets natiu de GitHub, la protecció de push i el Private Vulnerability Reporting s'han d'habilitar manualment a GitHub quan estiguin disponibles.
