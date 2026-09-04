@@ -15,7 +15,10 @@ DATA = ROOT / "data"
 MUNICIPIS_CSV = REFERENCE / "municipis_catalunya.csv"
 COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
-APP_JS = FRONTEND / "app.js"
+# El client és un bundle IIFE generat per esbuild a partir de
+# frontend/src/app.js (vegeu build.mjs / README). Es versiona al
+# repositori: `python -m streamlit run app.py` no requereix npm/node.
+APP_JS = FRONTEND / "dist" / "ferrocat.bundle.js"
 OD_PARQUET = DATA / "od_catalunya.parquet"
 REL_PARQUET = DATA / "municipi_ine_to_mitma.parquet"
 META_JSON = DATA / "metadata.json"
@@ -111,11 +114,7 @@ def load_frontend_payload() -> tuple[list[dict], list[list], list[dict], dict]:
 
 def extract_component_assets(template: str) -> tuple[str, str]:
     style = re.search(r"<style>(.*?)</style>", template, flags=re.S)
-    body = re.search(
-        r'<body>\s*(.*?)(?=<script>\s*const MUNICIPIS)',
-        template,
-        flags=re.S,
-    )
+    body = re.search(r"<body>\s*(.*?)\s*</body>", template, flags=re.S)
     if not style or not body:
         raise RuntimeError("frontend/index.html no té l'estructura esperada")
     return body.group(1).strip(), style.group(1).strip()
@@ -132,6 +131,15 @@ if not hasattr(st.components, "v2"):
     st.error(
         'Aquesta versió necessita Streamlit >= 1.62. Executa:\n'
         'python -m pip install -U "streamlit>=1.62"'
+    )
+    st.stop()
+
+if not APP_JS.exists():
+    st.error(
+        "Falta el bundle del frontend: frontend/dist/ferrocat.bundle.js\n\n"
+        "Genera'l amb:\n"
+        "npm install\n"
+        "npm run build"
     )
     st.stop()
 
@@ -168,7 +176,7 @@ rail_app(
         "od_pairs": od_pairs,
         "meta": meta,
     },
-    key="catatrens_fullscreen_v8",
+    key="catatrens_fullscreen_v9",
     width="stretch",
     height="content",
 )

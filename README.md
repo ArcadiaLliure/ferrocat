@@ -27,7 +27,60 @@ Streamlit actua principalment com a host i carregador de dades. La interacció c
 - Demanda basada en dades origen–destinació observades del Ministeri de Transports.
 - Model modal tren/cotxe configurable.
 - Estimació de vehicles evitats, CO₂ i cost.
-- Possibilitat d’indicar quilòmetres de via existent reutilitzada per línia.
+- Infraestructura nova/existent/millora a nivell de **tram** (no un sol número agregat per línia).
+
+---
+
+## Desenvolupament del frontend (branca `functional-architecture`)
+
+El frontend del component viu a `frontend/src/` com a mòduls ES:
+
+```text
+frontend/src/
+├── app.js                 # entrada: mapa, picking, labels, OSM, sidebar
+└── domain/                # funcions PURES, testejades amb Vitest
+    ├── mobility.js         # distància, captació territorial, OD MITMS
+    ├── travel-time.js      # temps generalitzat del tren (in-vehicle/dwell/accés/horari)
+    ├── car-time.js         # temps generalitzat del cotxe
+    ├── modal-choice.js     # logit tren vs. cotxe amb maxDiversion
+    ├── line.js             # model Segment{fromStationId,toStationId,infrastructureType}
+    ├── cost.js             # cost per tram (nou vs. existent)
+    ├── network.js          # resum de xarxa (suma de línies, sense doble comptatge fals)
+    └── metrics.js          # composa els anteriors per calcular una línia
+```
+
+Aquests mòduls es bundlegen amb **esbuild** (format IIFE, sense dependències
+de runtime) a `frontend/dist/ferrocat.bundle.js`, que és el fitxer que
+`app.py` injecta dins de Streamlit Components V2. **Node/npm només fan
+falta per generar aquest bundle en desenvolupament**; el bundle es
+versiona al repositori, de manera que `python -m streamlit run app.py`
+mai requereix npm ni node — ni en local ni a Streamlit Community Cloud.
+
+```bash
+npm install        # només la primera vegada / quan canvien les dependències
+npm run build       # regenera frontend/dist/ferrocat.bundle.js
+npm test            # executa els tests del domini amb Vitest
+```
+
+Si canvies qualsevol fitxer de `frontend/src/`, cal tornar a executar
+`npm run build` abans de `streamlit run app.py`; si no ho fas, `app.py`
+mostra un avís explícit en comptes de fallar en silenci.
+
+### Semàntica del resum global
+
+El panell "Resum global" mostra la **suma de les línies dibuixades**, no
+una assignació real de xarxa: si dues línies capten el mateix trajecte
+OD, aquesta xifra pot duplicar-lo. Mentre no existeixi una assignació de
+xarxa completa (transbordaments, millor ruta entre línies — preparat a
+`domain/network.js` per implementar-se més endavant), la UI ho etiqueta
+explícitament com "Suma de línies (pot contenir solapaments)".
+
+### Tests
+
+```bash
+npm test              # domini JS (mobility, travel-time, modal-choice, cost, line…)
+python -m pytest tests/   # càrrega de dades i extracció del component Streamlit
+```
 
 ---
 

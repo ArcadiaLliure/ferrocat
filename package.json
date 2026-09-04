@@ -1,0 +1,14 @@
+{
+  "name": "ferrocat-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Eines de desenvolupament (build/test) del frontend de Ferrocat. No calen en runtime: python -m streamlit run app.py funciona sense npm ni node.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "vitest": "^2.1.0"
+  }
+}

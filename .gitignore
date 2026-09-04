@@ -6,3 +6,9 @@ venv/
 .streamlit/secrets.toml
 
 data/raw/
+
+# Frontend dev tooling: node_modules NO fa falta en runtime.
+# frontend/dist/ferrocat.bundle.js SÍ es versiona (és el que executa
+# Streamlit Community Cloud sense npm/node).
+node_modules/
+frontend/src/app.legacy.js.bak

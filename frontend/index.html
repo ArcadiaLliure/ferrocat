@@ -439,6 +439,17 @@
     background:#fff; color:var(--ink); font:10.5px 'IBM Plex Mono',monospace;
   }
   .linia-warning{font-size:10px;color:#9a6500;margin:6px 0 0;line-height:1.35;}
+  .trams-detall{margin-top:8px;padding-top:6px;border-top:1px dashed var(--paper-edge);}
+  .trams-detall summary{font-size:10.5px;font-family:'IBM Plex Mono',monospace;color:var(--ink-soft);cursor:pointer;}
+  .trams-llista{margin-top:6px;display:flex;flex-direction:column;gap:4px;}
+  .tram-item{display:grid;grid-template-columns:44px 1fr auto auto;align-items:center;gap:6px;font-size:10.5px;}
+  .tram-label{font-family:'IBM Plex Mono',monospace;font-size:9px;padding:1px 4px;border-radius:2px;text-align:center;}
+  .tram-new{background:rgba(255,107,53,0.15);color:#b3450e;}
+  .tram-existing{background:rgba(6,214,160,0.18);color:#0a7a58;}
+  .tram-upgrade{background:rgba(58,134,255,0.18);color:#1f5cc7;}
+  .tram-route{color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .tram-km{font-family:'IBM Plex Mono',monospace;color:var(--ink-soft);}
+  .tram-item select{font-size:9.5px;padding:1px;}
 
 
 
@@ -561,7 +572,7 @@
     </div>
 
     <div class="panell">
-      <h2>Resum global</h2>
+      <h2 id="resum-global-titol">Resum global</h2>
       <div class="resum-grid" id="resum-global"></div>
     </div>
 
@@ -650,14 +661,5 @@
   </aside>
 </div>
 </div>
-<script>
-const MUNICIPIS = __MUNICIPIS_JSON__;
-const COMARQUES = __COMARQUES_JSON__;
-const OD_PAIRS = __OD_PAIRS_JSON__;
-const META = __META_JSON__;
-</script>
-<script>
-__APP_JS__
-</script>
 </body>
 </html>
