@@ -1,4 +1,4 @@
-# Development and security tooling. Install together with requirements.txt.
+# Eines de desenvolupament i seguretat. Instal·la-les juntament amb requirements.txt.
 pytest==9.1.1
 pip-audit==2.10.1
 pip-tools==7.6.1
