@@ -3,18 +3,36 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
+from xml.etree.ElementTree import ParseError
 
 import pandas as pd
 import requests
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://movilidad-opendata.mitma.es"
 CAT_PROVINCES = ("08", "17", "25", "43")  # Barcelona, Girona, Lleida, Tarragona
 RSS_URL = f"{BASE_URL}/RSS.xml"
 USER_AGENT = "simulador-ferroviari-catalunya/1.0 (+OpenData MITMS)"
+
+ALLOWED_DOWNLOAD_HOSTS = frozenset({"movilidad-opendata.mitma.es"})
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+MAX_REDIRECTS = 5
+MAX_RSS_BYTES = 10 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024 * 1024
+# Deliberately generous hard ceiling: protects against anomalous decompression while
+# remaining far above the expected scale of the official daily municipal dataset.
+MAX_ROWS_PER_DATASET = 250_000_000
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+CONNECT_TIMEOUT_SECONDS = 15
+READ_TIMEOUT_SECONDS = 180
+RSS_READ_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -28,31 +46,160 @@ def is_catalan_mitma_zone(value: object) -> bool:
     return s.startswith(CAT_PROVINCES)
 
 
+def validate_download_url(url: str) -> None:
+    """Allow downloads only from the official MITMS HTTPS endpoint."""
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError(f"Es rebutja una URL no HTTPS: {url}")
+    if hostname not in ALLOWED_DOWNLOAD_HOSTS:
+        raise RuntimeError(f"Es rebutja un host de descàrrega no autoritzat: {hostname or '<buit>'}")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("No s'admeten credencials incrustades a les URL de descàrrega.")
+    if parsed.port not in (None, 443):
+        raise RuntimeError(f"Es rebutja un port HTTPS no autoritzat: {parsed.port}")
+
+
 def request_session() -> requests.Session:
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT})
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
     return s
 
 
-def download_file(session: requests.Session, url: str, dest: Path, optional: bool = False) -> bool:
+def _get_with_validated_redirects(
+    session: requests.Session,
+    url: str,
+    *,
+    stream: bool,
+    timeout: tuple[int, int],
+) -> requests.Response:
+    """GET while validating every redirect target instead of following blindly."""
+    current = url
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        validate_download_url(current)
+        response = session.get(
+            current,
+            stream=stream,
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        validate_download_url(response.url or current)
+        if response.status_code not in REDIRECT_STATUSES:
+            return response
+
+        location = response.headers.get("Location")
+        response.close()
+        if not location:
+            raise RuntimeError("Resposta de redirecció sense capçalera Location.")
+        if redirect_count >= MAX_REDIRECTS:
+            raise RuntimeError("Massa redireccions durant la descàrrega.")
+        current = urljoin(current, location)
+        validate_download_url(current)
+
+    raise RuntimeError("Massa redireccions durant la descàrrega.")
+
+
+def _content_length(headers: requests.structures.CaseInsensitiveDict | dict[str, str]) -> int | None:
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _check_declared_size(headers: requests.structures.CaseInsensitiveDict | dict[str, str], max_bytes: int) -> None:
+    declared = _content_length(headers)
+    if declared is not None and declared > max_bytes:
+        raise RuntimeError(
+            f"La descàrrega declara {declared:,} bytes, per sobre del límit de {max_bytes:,}."
+        )
+
+
+def fetch_limited_bytes(
+    session: requests.Session,
+    url: str,
+    *,
+    max_bytes: int,
+    timeout: tuple[int, int] = (CONNECT_TIMEOUT_SECONDS, RSS_READ_TIMEOUT_SECONDS),
+) -> bytes:
+    """Fetch a small resource with both declared and observed byte limits."""
+    response = _get_with_validated_redirects(session, url, stream=True, timeout=timeout)
+    with response:
+        response.raise_for_status()
+        _check_declared_size(response.headers, max_bytes)
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=min(DOWNLOAD_CHUNK_BYTES, max_bytes + 1)):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                raise RuntimeError(f"La resposta supera el límit de {max_bytes:,} bytes.")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+def download_file(
+    session: requests.Session,
+    url: str,
+    dest: Path,
+    optional: bool = False,
+    *,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
+) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 0:
         return True
+
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    tmp.unlink(missing_ok=True)
     try:
-        with session.get(url, stream=True, timeout=(15, 180)) as r:
-            if r.status_code == 404 and optional:
+        response = _get_with_validated_redirects(
+            session,
+            url,
+            stream=True,
+            timeout=(CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS),
+        )
+        with response:
+            if response.status_code == 404 and optional:
                 return False
-            r.raise_for_status()
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with tmp.open("wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        f.write(chunk)
+            response.raise_for_status()
+            _check_declared_size(response.headers, max_bytes)
+
+            total = 0
+            with tmp.open("wb") as file_obj:
+                for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise RuntimeError(
+                            f"La descàrrega supera el límit de {max_bytes:,} bytes."
+                        )
+                    file_obj.write(chunk)
+
+            if total == 0:
+                raise RuntimeError("La descàrrega ha retornat un fitxer buit.")
             tmp.replace(dest)
             return True
-    except requests.HTTPError:
-        if optional:
-            return False
+    except Exception:
+        tmp.unlink(missing_ok=True)
         raise
 
 
@@ -99,15 +246,12 @@ def read_relation(path: Path) -> pd.DataFrame:
     rel["ine_code"] = rel["ine_code"].astype(str).str.zfill(5)
     rel["mitma_zone"] = rel["mitma_zone"].astype(str)
 
-    # Relation is repeated by census section; municipality -> MITMA municipal zone
-    # should resolve to one zone. Keep the mode defensively if duplicates exist.
     rel = (
         rel.groupby("ine_code", as_index=False)["mitma_zone"]
         .agg(lambda s: s.value_counts().index[0])
     )
     rel = rel[rel["ine_code"].str.startswith(CAT_PROVINCES)].copy()
     return rel
-
 
 
 def daily_url(day: date) -> str:
@@ -119,43 +263,29 @@ def daily_url(day: date) -> str:
     )
 
 
-
-def get_latest_available_day(session: requests.Session) -> date:
-    """
-    Retorna la data més recent disponible per al fitxer
-    YYYYMMDD_Viajes_municipios.csv.gz consultant el RSS oficial del MITMS.
-
-    No prova dates una a una: descarrega RSS.xml una sola vegada, extreu totes
-    les dates publicades per a Viajes_municipios i en retorna la màxima.
-    """
+def get_latest_available_day(
+    session: requests.Session,
+    *,
+    max_bytes: int = MAX_RSS_BYTES,
+) -> date:
+    """Return the newest municipal OD date advertised by the official MITMS RSS."""
     print(f"[rss] consultant {RSS_URL}")
-
-    response = session.get(RSS_URL, timeout=30)
-    response.raise_for_status()
+    xml_bytes = fetch_limited_bytes(session, RSS_URL, max_bytes=max_bytes)
 
     try:
-        root = ET.fromstring(response.content)
-    except ET.ParseError as exc:
-        raise RuntimeError("El RSS del MITMS no és un XML vàlid.") from exc
+        root = ET.fromstring(xml_bytes)
+    except (ParseError, DefusedXmlException) as exc:
+        raise RuntimeError("El RSS del MITMS no és un XML vàlid o segur.") from exc
 
     dates: list[date] = []
-
-    # El RSS té habitualment estructura rss/channel/item, però fem servir
-    # .//item per tolerar petits canvis d'estructura.
     for item in root.findall(".//item"):
         link = item.findtext("link")
         if not link:
             continue
-
         filename = link.rsplit("/", 1)[-1].split("?", 1)[0]
-
-        match = re.fullmatch(
-            r"(\d{8})_Viajes_municipios\.csv\.gz",
-            filename,
-        )
+        match = re.fullmatch(r"(\d{8})_Viajes_municipios\.csv\.gz", filename)
         if not match:
             continue
-
         try:
             dates.append(datetime.strptime(match.group(1), "%Y%m%d").date())
         except ValueError:
@@ -163,24 +293,17 @@ def get_latest_available_day(session: requests.Session) -> date:
 
     if not dates:
         raise RuntimeError(
-            "El RSS del MITMS no conté cap fitxer "
-            "YYYYMMDD_Viajes_municipios.csv.gz."
+            "El RSS del MITMS no conté cap fitxer YYYYMMDD_Viajes_municipios.csv.gz."
         )
 
     latest = max(dates)
     print(f"[rss] últim Viajes_municipios publicat: {latest.isoformat()}")
     return latest
 
-def download_days(
-    session: requests.Session,
-    raw_dir: Path,
-) -> list[DownloadedDay]:
-    """
-    Consulta el RSS oficial per saber quina és la data més recent publicada
-    i descarrega únicament aquell fitxer municipal.
-    """
-    latest_day = get_latest_available_day(session)
 
+def download_days(session: requests.Session, raw_dir: Path) -> list[DownloadedDay]:
+    """Download only the newest municipal OD file advertised by the official RSS."""
+    latest_day = get_latest_available_day(session)
     ymd = latest_day.strftime("%Y%m%d")
     dest = (
         raw_dir
@@ -189,36 +312,26 @@ def download_days(
         / f"{ymd}_Viajes_municipios.csv.gz"
     )
     url = daily_url(latest_day)
-
     print(f"[download] {url}")
-
-    ok = download_file(
-        session=session,
-        url=url,
-        dest=dest,
-        optional=False,
-    )
+    ok = download_file(session=session, url=url, dest=dest, optional=False)
 
     if not ok or not dest.exists() or dest.stat().st_size == 0:
-        raise RuntimeError(
-            f"No s'ha pogut descarregar un fitxer vàlid per a {latest_day}."
-        )
+        raise RuntimeError(f"No s'ha pogut descarregar un fitxer vàlid per a {latest_day}.")
 
-    print(
-        f"[download] OK — {dest.name} "
-        f"({dest.stat().st_size / 1024 / 1024:.1f} MB)"
-    )
-
+    print(f"[download] OK — {dest.name} ({dest.stat().st_size / 1024 / 1024:.1f} MB)")
     return [DownloadedDay(day=latest_day, path=dest)]
 
 
-def read_daily_catalonia(path: Path, valid_zones: set[str]) -> pd.DataFrame:
-    """
-    Read a nationwide daily matrix in chunks, retain Catalonia-only OD flows,
-    and aggregate all hourly/activity/sociodemographic segments.
-    """
+def read_daily_catalonia(
+    path: Path,
+    valid_zones: set[str],
+    *,
+    max_rows: int = MAX_ROWS_PER_DATASET,
+) -> pd.DataFrame:
+    """Read the national matrix in chunks, retaining Catalonia-only OD flows."""
     wanted = {"origen", "destino", "viajes", "viajes_km"}
     pieces: list[pd.DataFrame] = []
+    rows_seen = 0
 
     reader = pd.read_csv(
         path,
@@ -229,6 +342,11 @@ def read_daily_catalonia(path: Path, valid_zones: set[str]) -> pd.DataFrame:
         low_memory=False,
     )
     for chunk in reader:
+        rows_seen += len(chunk)
+        if rows_seen > max_rows:
+            raise RuntimeError(
+                f"{path.name}: supera el límit defensiu de {max_rows:,} files."
+            )
         missing = {"origen", "destino", "viajes"} - set(chunk.columns)
         if missing:
             raise RuntimeError(f"{path.name}: falten columnes {sorted(missing)}")
@@ -271,7 +389,6 @@ def build_dataset(days: list[DownloadedDay], relation: pd.DataFrame, out_dir: Pa
     daily = pd.concat(daily_frames, ignore_index=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Amb un únic dia publicat, aquesta agregació conserva la matriu direccional d'aquell dia.
     agg_spec = {
         "viatges_dia": ("viajes", "mean"),
         "viatges_std": ("viajes", "std"),
@@ -286,7 +403,6 @@ def build_dataset(days: list[DownloadedDay], relation: pd.DataFrame, out_dir: Pa
         .fillna({"viatges_std": 0.0})
     )
 
-    # Store both compact matrix and mapping used by Streamlit.
     relation.to_parquet(out_dir / "municipi_ine_to_mitma.parquet", index=False)
     od.to_parquet(out_dir / "od_catalunya.parquet", index=False)
 
@@ -299,14 +415,15 @@ def build_dataset(days: list[DownloadedDay], relation: pd.DataFrame, out_dir: Pa
         "aggregation": "Últim dia municipal publicat al RSS; totes les franges i segments del dia agregats.",
         "scope": "Origen i destí en zones MITMS associades a municipis de Catalunya.",
     }
-    (out_dir / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "metadata.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     print()
     print("Fet.")
     print(f"  OD:      {out_dir / 'od_catalunya.parquet'} ({len(od):,} relacions direccionals)")
     print(f"  Mapa ID: {out_dir / 'municipi_ine_to_mitma.parquet'} ({len(relation):,} municipis INE)")
     print(f"  Dies:    {', '.join(meta['days'])}")
-
 
 
 def main() -> int:
@@ -331,10 +448,7 @@ def main() -> int:
 
     print()
     print("=== Matrius OD diàries ===")
-    days = download_days(
-        session=session,
-        raw_dir=raw_dir,
-    )
+    days = download_days(session=session, raw_dir=raw_dir)
 
     print()
     print("=== Processament ===")
