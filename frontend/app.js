@@ -1,4 +1,4 @@
-/* Catatrens client engine: multiple lines, MITMS OD, procedural/OSM, zero Streamlit reruns. */
+/* Motor de client de Ferrocat: múltiples línies, OD MITMS, mapa procedural/OSM i zero reruns de Streamlit. */
 const COLORS_LINIA = ['#e63946','#2a9d8f','#f4a300','#8338ec','#3a86ff','#06d6a0','#ff6b35','#c9184a'];
 const BASE_VB = {x:0,y:0,w:800,h:660};
 const MARGE_PROJECCIO = 30;
@@ -34,9 +34,10 @@ const parametres = {
   radiCaptacio:8,
 };
 
-// SECURITY: sessionStorage is user-controlled input. Keep persisted state behind
-// explicit schemas/allowlists before it can influence HTML/SVG attributes or math.
-const STATE_KEY = 'catatrens-state-v9';
+// SEGURETAT: sessionStorage és una entrada controlada per l'usuari. L'estat
+// persistit ha de passar per esquemes i allowlists explícits abans que pugui
+// influir en atributs HTML/SVG o en els càlculs.
+const STATE_KEY = 'ferrocat-state-v1.0';
 const VALID_COLORS = new Set(COLORS_LINIA);
 const VALID_LAYER_MODES = new Set(['procedural','osm']);
 const LINE_ID_RE = /^linia-\d+$/;
@@ -73,13 +74,12 @@ function byId(id){
   return parentElement.querySelector(`#${id}`);
 }
 
-
 function setLayerHTML(id, html){
   const el=byId(id);
-  if(!el){ console.warn(`[Catatrens] Falta #${id}`); return false; }
-  // This renderer intentionally uses SVG/HTML strings for performance. Variable
-  // text is escaped with esc(); non-text attributes come from validated state or
-  // numeric calculations. Never pass unsanitized browser storage into this helper.
+  if(!el){ console.warn(`[Ferrocat] Falta #${id}`); return false; }
+  // Aquest renderitzador manté cadenes SVG/HTML per rendiment. El text variable
+  // passa per esc(); els atributs no textuals provenen d'estat validat o de
+  // càlculs numèrics. No hi passis mai estat del navegador sense sanejar.
   el.innerHTML=html;
   return true;
 }
@@ -187,7 +187,7 @@ function saveState(){
     });
     if(safe)sessionStorage.setItem(STATE_KEY,JSON.stringify(safe));
   }catch(err){
-    console.warn('[Catatrens] No s’ha pogut desar l’estat local.',err);
+    console.warn('[Ferrocat] No s’ha pogut desar l’estat local.',err);
   }
 }
 function restoreState(){
@@ -206,12 +206,13 @@ function restoreState(){
     Object.assign(parametres,safe.parametres);
   }catch(err){
     sessionStorage.removeItem(STATE_KEY);
-    console.warn('[Catatrens] Estat local invàlid ignorat.',err);
+    console.warn('[Ferrocat] Estat local invàlid ignorat.',err);
   }
 }
 restoreState();
 
-// Web Mercator + uniform scale: OSM, municipalities and comarca geometry align without distortion.
+// Web Mercator amb escala uniforme: OSM, municipis i geometria comarcal
+// queden alineats sense distorsió.
 function mercatorNorm(lon,lat){
   const x=(Number(lon)+180)/360;
   const cl=clamp(Number(lat),-85.05112878,85.05112878);
@@ -395,7 +396,7 @@ byId('cerca-input').addEventListener('input',e=>{const q=e.target.value.trim().t
 
 function renderComarques(){
   const capa=byId('capa-comarques');
-  if(!capa){ console.warn('[Catatrens] Falta #capa-comarques'); return; }
+  if(!capa){ console.warn('[Ferrocat] Falta #capa-comarques'); return; }
   if(!mostrarComarques){capa.innerHTML='';return;}let s='';
   COMARQUES.forEach(c=>c.anellsProjectats.forEach(poly=>{const d=poly.map(r=>'M '+r.map(([x,y])=>`${x.toFixed(1)} ${y.toFixed(1)}`).join(' L ')+' Z').join(' ');s+=`<path class="comarca-poligon"
   d="${d}"
@@ -407,7 +408,7 @@ function renderComarques(){
 }
 function renderHover(){
   const capa=byId('capa-hover');
-  if(!capa){ console.warn('[Catatrens] Falta #capa-hover'); return; }
+  if(!capa){ console.warn('[Ferrocat] Falta #capa-hover'); return; }
   const m=hoveredId?MUNICIPI_PER_ID[hoveredId]:null;
   if(!m){capa.innerHTML='';return;}
   const r=11/Math.max(zoomFactor(),.01);
@@ -418,7 +419,7 @@ function lonLatToTile(lon,lat,z){const n=2**z,r=lat*Math.PI/180;return [(lon+180
 function tileToLonLat(x,y,z){const n=2**z,lon=x/n*360-180,a=Math.PI-2*Math.PI*y/n;return [lon,180/Math.PI*Math.atan(Math.sinh(a))];}
 function renderOSM(){
   const capa=byId('capa-osm'),grid=byId('grid-bg'),bg=byId('map-bg');
-  if(!capa || !grid || !bg){ console.warn('[Catatrens] Capes OSM incompletes'); return; }
+  if(!capa || !grid || !bg){ console.warn('[Ferrocat] Capes OSM incompletes'); return; }
   if(layerMode!=='osm'){
     capa.innerHTML='';
     grid.style.display='';
@@ -551,7 +552,7 @@ const defs=[['velocitatTren','v-velocitatTren',v=>v+' km/h'],['frequencia','v-fr
 defs.forEach(([k,label,format])=>{
   const input=byId('s-'+k), out=byId(label);
   if(!input || !out){
-    console.warn('[Catatrens] Control no trobat:', k, 'input=', !!input, 'label=', !!out);
+    console.warn('[Ferrocat] Control no trobat:', k, 'input=', !!input, 'label=', !!out);
     return;
   }
   input.value=parametres[k];
