@@ -5,10 +5,10 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const source = fs.readFileSync('frontend/app.js', 'utf8');
-const start = source.indexOf("const STATE_KEY = 'catatrens-state-v9';");
+const start = source.indexOf("const STATE_KEY = 'ferrocat-state-v1.0';");
 const endMarker = 'restoreState();';
 const end = source.indexOf(endMarker, start);
-assert.ok(start >= 0 && end > start, 'state security block not found in frontend/app.js');
+assert.ok(start >= 0 && end > start, 'No s’ha trobat el bloc de seguretat de l’estat a frontend/app.js');
 const actualSecurityBlock = source.slice(start, end + endMarker.length);
 
 const storage = new Map();
@@ -57,11 +57,11 @@ vm.createContext(context);
 vm.runInContext(prelude + actualSecurityBlock + expose, context, {filename: 'frontend-state-security.vm.js'});
 const api = context.__stateApi;
 
-// Empty state leaves defaults untouched.
+// L'estat buit manté els valors per defecte.
 assert.deepEqual(Array.from(api.runtime().linies), []);
 assert.equal(api.runtime().layerMode, 'procedural');
 
-// Valid persisted data survives sanitization.
+// Les dades persistides vàlides sobreviuen al sanejament.
 const valid = api.sanitizeState({
   linies:[{id:'linia-2',nom:'Regional',color:'#e63946',estacions:['08001','08002'],existingKm:3}],
   comptadorLinies:2,
@@ -84,12 +84,12 @@ const boundedLine = api.sanitizeLines([{
 assert.equal(boundedLine.nom.length, 80);
 assert.equal(boundedLine.existingKm, 0);
 
-// Manipulated attributes never reach the live state unchanged.
+// Els atributs manipulats no arriben sense validar a l'estat viu.
 const manipulated = api.sanitizeState({
   linies:[
     {id:'linia-1',nom:'A'.repeat(500),color:'red\" onload=alert(1)',estacions:['08001'],existingKm:-10},
-    {id:'linia-2',nom:'Safe',color:'#2a9d8f',estacions:['08001','99999','08001','08002'],existingKm:5},
-    {id:'../../bad',nom:'Bad ID',color:'#e63946',estacions:['08001'],existingKm:0},
+    {id:'linia-2',nom:'Segura',color:'#2a9d8f',estacions:['08001','99999','08001','08002'],existingKm:5},
+    {id:'../../bad',nom:'ID invàlid',color:'#e63946',estacions:['08001'],existingKm:0},
   ],
   comptadorLinies:2,
   lineaActivaId:'../../bad',
@@ -111,13 +111,13 @@ assert.equal(manipulated.parametres.velocitatTren, 80);
 assert.equal(manipulated.parametres.frequencia, 2);
 assert.equal(manipulated.parametres.biaix, 0.8);
 
-// Values parsed as Infinity are rejected by Number.isFinite.
+// Els valors que es converteixen en Infinity es rebutgen amb Number.isFinite.
 const huge = JSON.parse('{"linies":[],"comptadorLinies":0,"parametres":{"velocitatTren":1e999}}');
 assert.equal(api.sanitizeState(huge).parametres.velocitatTren, 80);
 
-// Corrupt JSON is removed rather than crashing restoreState().
+// Un JSON corrupte s'elimina en lloc de fer fallar restoreState().
 storage.set(api.STATE_KEY, '{not-json');
 api.restoreState();
 assert.equal(storage.has(api.STATE_KEY), false);
 
-console.log('frontend state security tests: OK');
+console.log('proves de seguretat de l’estat del frontend: OK');
