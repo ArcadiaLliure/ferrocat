@@ -1,21 +1,32 @@
-# Catatrens — Simulador ferroviari de Catalunya
+# Ferrocat — Simulador ferroviari de Catalunya
 
-Catatrens és un simulador interactiu de línies ferroviàries per a Catalunya. Permet dibuixar una o diverses línies, editar-les independentment i estimar per línia i per xarxa la demanda observada que podria captar el tren, els vehicles evitats, l'estalvi de CO₂ i el cost aproximat de construcció.
+**Versió actual: 1.0**
 
-La interfície manté el disseny original: **mapa gran a l'esquerra** i **panell de línies, estadístiques i paràmetres a la dreta**. Streamlit actua com a host i carregador de dades; zoom, pan, selecció de municipis, edició de línies, canvi de capa i sliders s'executen al navegador mitjançant **Streamlit Components V2**, sense reruns continus de Streamlit.
+Ferrocat és un simulador interactiu de línies ferroviàries per a Catalunya. Permet dibuixar una o diverses línies sobre el mapa, editar-les independentment i estimar, per a cada línia i per al conjunt de la xarxa, la demanda observada que podria captar el tren, els vehicles evitats, l'estalvi de CO₂ i el cost aproximat de construcció.
+
+La interfície manté el plantejament original: **mapa gran a l'esquerra** i **panell de línies, estadístiques i paràmetres a la dreta**. Streamlit actua principalment com a host i carregador de dades. El zoom, el pan, la selecció de municipis, l'edició de línies, el canvi de capa i els sliders s'executen al navegador mitjançant **Streamlit Components V2**, sense reruns continus de Streamlit.
 
 ## Funcionalitats principals
 
-- Mapa interactiu de Catalunya amb capa procedural blueprint.
+- Mapa interactiu de Catalunya.
+- Capa procedural tipus blueprint.
 - Límits de les 43 comarques.
 - Capa OpenStreetMap opcional.
-- Selecció magnètica de municipis i etiquetes adaptatives segons el zoom.
-- Múltiples línies simultànies, editables de forma independent.
-- Estadístiques i resum global recalculats al navegador.
+- Municipis de Catalunya amb coordenades i població de referència.
+- Selecció magnètica de municipis.
+- Etiquetes adaptatives segons el nivell de zoom.
+- Creació de múltiples línies ferroviàries simultànies.
+- Edició independent de cada línia.
+- Possibilitat d'aturar l'edició i començar una nova línia.
+- Desfer l'última parada.
+- Eliminar línies individualment o esborrar tota la xarxa.
+- Estadístiques individualitzades per línia.
+- Resum global de la xarxa.
 - Demanda basada en dades origen–destinació observades del MITMS.
 - Model modal tren/cotxe configurable.
 - Estimació de vehicles evitats, CO₂ i cost.
-- Persistència de l'escenari de treball a `sessionStorage` del navegador.
+- Possibilitat d'indicar quilòmetres de via existent reutilitzada per línia.
+- Persistència de l'escenari de treball a `sessionStorage`.
 
 ---
 
@@ -27,17 +38,19 @@ Streamlit / Python
 ├── carrega municipis i comarques
 ├── carrega matriu OD MITMS
 ├── carrega relació municipi INE ↔ zona MITMS
-└── envia únicament dades públiques al component
+├── prepara únicament dades públiques per al frontend
+│
+└── Streamlit Components V2
      │
-     └── Streamlit Components V2
-          └── HTML + CSS + JavaScript
-               ├── mapa procedural / OSM
-               ├── zoom i pan
-               ├── línies i estacions
-               ├── sliders
-               ├── model modal
-               ├── estadístiques per línia
-               └── resum global
+     └── HTML + CSS + JavaScript
+          ├── mapa procedural / OSM
+          ├── zoom i pan
+          ├── selecció de municipis
+          ├── línies i estacions
+          ├── sliders
+          ├── model modal
+          ├── estadístiques per línia
+          └── resum global
 ```
 
 El frontend es manté separat del codi Python:
@@ -48,7 +61,7 @@ frontend/
 └── app.js
 ```
 
-`app.py` llegeix els datasets locals, construeix el payload públic i serveix la UI mitjançant Components V2.
+`app.py` llegeix els datasets locals, construeix el payload públic i serveix la interfície mitjançant Components V2.
 
 ---
 
@@ -82,7 +95,8 @@ ferrocat/
 │
 ├── tests/
 │   ├── conftest.py
-│   └── test_download_security.py
+│   ├── test_download_security.py
+│   └── frontend_state_security.test.js
 │
 ├── docs/
 │   └── SECURITY-HARDENING.md
@@ -103,9 +117,9 @@ ferrocat/
 
 - Python 3.11 o superior.
 - `pip`.
-- Connexió a Internet per descarregar dades MITMS i, si s'activa, per carregar tesel·les d'OpenStreetMap i Google Fonts.
+- Connexió a Internet per descarregar dades MITMS i, si s'activa, per carregar les tesel·les d'OpenStreetMap i les tipografies de Google Fonts.
 
-Les dependències directes de producció es documenten a `requirements.in` i les versions utilitzades en producció estan fixades exactament a `requirements.txt`.
+Les dependències directes de producció es documenten a `requirements.in`. Les versions utilitzades en producció estan fixades exactament a `requirements.txt` per fer els desplegaments reproduïbles.
 
 ---
 
@@ -134,7 +148,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-## 3. Instal·lar les dependències
+## 3. Instal·lar les dependències de producció
 
 ```bash
 python -m pip install --upgrade pip
@@ -152,7 +166,7 @@ python -m pip install -r requirements-dev.txt
 
 # Preparació de les dades MITMS
 
-L'aplicació necessita:
+Ferrocat necessita aquests fitxers processats:
 
 ```text
 data/od_catalunya.parquet
@@ -160,7 +174,7 @@ data/municipi_ine_to_mitma.parquet
 data/metadata.json
 ```
 
-Ja poden estar versionats al repositori. Per actualitzar-los amb l'última matriu municipal publicada:
+Els fitxers poden estar ja versionats al repositori. Per actualitzar-los amb l'última matriu municipal publicada:
 
 ```bash
 python download_mobility.py
@@ -168,32 +182,38 @@ python download_mobility.py
 
 El downloader:
 
-1. consulta una sola vegada el `RSS.xml` oficial del MITMS;
-2. detecta l'últim fitxer `YYYYMMDD_Viajes_municipios.csv.gz` publicat;
-3. descarrega la relació INE ↔ zona MITMS;
-4. descarrega únicament l'última matriu diària publicada;
-5. filtra origen i destí a Catalunya;
+1. consulta el `RSS.xml` oficial del MITMS;
+2. detecta directament l'últim fitxer `YYYYMMDD_Viajes_municipios.csv.gz` publicat;
+3. descarrega la relació entre municipis INE i zones MITMS;
+4. descarrega únicament l'última matriu diària disponible;
+5. filtra els orígens i destinacions de Catalunya;
 6. agrega les franges i segments del dia;
 7. genera els dos Parquet i `metadata.json`.
 
 No prova dates una a una.
 
-Els originals queden a `data/raw/`, que està exclòs de Git.
+Els fitxers originals es desen a:
+
+```text
+data/raw/
+```
+
+Aquest directori està exclòs de Git.
 
 ## Proteccions del downloader
 
 El pipeline tracta la xarxa i els fitxers remots com a entrada no confiable, encara que la font sigui oficial:
 
 - només permet HTTPS;
-- només permet `movilidad-opendata.mitma.es`;
+- només permet hosts explícitament autoritzats del MITMS;
 - valida cada redirecció abans de seguir-la;
 - limita el nombre de redireccions;
 - aplica timeouts de connexió i lectura;
-- reintenta únicament errors transitoris (`429`, `500`, `502`, `503`, `504`), amb backoff i nombre finit de reintents;
-- limita el RSS a 10 MiB;
-- limita cada descàrrega a 5 GiB;
+- reintenta únicament errors transitoris (`429`, `500`, `502`, `503`, `504`), amb backoff i un nombre finit de reintents;
+- limita la mida del RSS;
+- limita la mida de cada descàrrega;
 - comprova `Content-Length` quan existeix i compta també els bytes realment rebuts;
-- elimina fitxers `.part` en cas d'error;
+- elimina els fitxers `.part` en cas d'error;
 - només publica el fitxer final després d'una descàrrega completa;
 - analitza XML amb `defusedxml`;
 - processa els CSV gzip per chunks;
@@ -204,7 +224,9 @@ Els límits són constants explícites a `download_mobility.py` i s'han d'ajusta
 
 ---
 
-# Arrencar Catatrens
+# Arrencar Ferrocat
+
+Des del directori arrel:
 
 ```bash
 python -m streamlit run app.py
@@ -220,8 +242,9 @@ http://localhost:8501
 
 # Desplegament a Streamlit Community Cloud
 
-1. Puja el repositori a GitHub.
-2. Comprova que existeixin:
+## 1. Preparar el repositori
+
+Comprova que el repositori contingui com a mínim:
 
 ```text
 app.py
@@ -233,12 +256,21 @@ data/municipi_ine_to_mitma.parquet
 data/metadata.json
 ```
 
-3. A Streamlit Community Cloud crea una nova app.
-4. Selecciona el repositori i la branca que vulguis desplegar.
-5. Indica `app.py` com a fitxer principal.
-6. Desplega.
+No cal pujar `data/raw/`.
 
-L'aplicació **no executa `download_mobility.py` en arrencar**. Les dades publicades s'actualitzen deliberadament abans de fer push:
+## 2. Crear l'aplicació
+
+1. Puja el repositori a GitHub.
+2. Entra a Streamlit Community Cloud.
+3. Crea una nova aplicació.
+4. Selecciona `ArcadiaLliure/ferrocat`.
+5. Selecciona la branca que vulguis desplegar.
+6. Indica `app.py` com a fitxer principal.
+7. Desplega.
+
+Streamlit instal·larà les dependències de `requirements.txt`.
+
+Ferrocat **no executa `download_mobility.py` en arrencar**. Les dades publicades s'actualitzen deliberadament abans de fer push:
 
 ```bash
 python download_mobility.py
@@ -251,11 +283,11 @@ Els canvis de seguretat del repositori no desactiven XSRF ni CORS de Streamlit i
 
 ---
 
-# Desplegament self-hosted
+# Desplegament en servidor propi
 
-No exposis Streamlit directament a Internet en HTTP. Utilitza HTTPS darrere d'un reverse proxy com **Caddy, Nginx o Traefik** i preserva el suport de WebSocket.
+No exposis Streamlit directament a Internet mitjançant HTTP. Utilitza HTTPS darrere d'un reverse proxy com **Caddy, Nginx o Traefik** i preserva el suport de WebSocket.
 
-Exemple conceptual de capçaleres al reverse proxy:
+Capçaleres recomanades:
 
 ```text
 X-Content-Type-Options: nosniff
@@ -286,42 +318,65 @@ location / {
 }
 ```
 
-Afegeix HSTS al bloc HTTPS només després de validar el desplegament.
-
 ---
 
 # Model de demanda
 
 ## Demanda base
 
-La demanda **no es calcula a partir de la població**. La base són els viatges origen–destinació observats a `data/od_catalunya.parquet`, generats a partir de la matriu municipal del MITMS.
+La demanda **no es calcula a partir de la població**.
+
+La base són els viatges origen–destinació observats a:
+
+```text
+data/od_catalunya.parquet
+```
+
+generats a partir de la matriu municipal del Ministerio de Transportes y Movilidad Sostenible.
 
 La població s'utilitza com a estadística territorial i per resoldre l'assignació de zones MITMS agregades, no per generar viatges.
 
 ## Àrees de captació
 
-Cada municipi dins del radi configurat s'assigna a l'estació més propera. Una mateixa zona MITMS agregada s'assigna a una única estació per evitar doble recompte.
+Cada municipi situat dins del radi configurat al voltant d'una estació s'assigna a l'estació més propera.
+
+Això evita el doble recompte.
+
+## Zones MITMS agregades
+
+Quan una mateixa zona MITMS pot correspondre a l'àrea de captació de més d'una estació, Ferrocat l'assigna a una sola estació per evitar duplicar viatges.
+
+La relació utilitzada es desa a:
+
+```text
+data/municipi_ine_to_mitma.parquet
+```
 
 ## Canvi modal
 
-El model compara el temps generalitzat del tren amb el del cotxe i aplica un logit sobre els viatges observats corresponents a la quota actual del cotxe.
+El model compara el temps generalitzat del tren amb el del cotxe i aplica un model logit sobre els viatges observats corresponents a la quota actual del cotxe.
 
-## Estadístiques per línia
+---
 
-Cada targeta pot mostrar, entre altres:
+# Estadístiques per línia
+
+Cada línia disposa de la seva pròpia targeta al panell lateral.
+
+Entre les mètriques disponibles hi ha:
 
 - estacions;
 - longitud;
 - temps cap a cap;
-- població directa i d'influència;
+- població directa;
+- població d'influència;
 - OD observat/dia;
 - viatges captats pel tren/dia;
 - vehicles evitats/dia;
 - CO₂ estalviat;
 - cost estimat;
-- via existent reutilitzada.
+- quilòmetres de via existent reutilitzada.
 
-`OD observat/dia` és dada observada del MITMS. Captació, vehicles evitats, CO₂ i cost són resultats del model.
+`OD observat/dia` és demanda observada procedent de la matriu MITMS. La captació ferroviària, els vehicles evitats, el CO₂ i el cost són resultats del model.
 
 ---
 
@@ -329,11 +384,12 @@ Cada targeta pot mostrar, entre altres:
 
 ## Procedural
 
-La capa principal pròpia de Catatrens manté:
+La capa principal pròpia de Ferrocat manté:
 
 - fons blueprint `#0d2a4a`;
 - graella;
-- municipis i etiquetes;
+- municipis;
+- etiquetes;
 - límits comarcals translúcids;
 - línies ferroviàries;
 - fluxos capturats.
@@ -346,13 +402,13 @@ La capa OSM utilitza tesel·les de:
 https://tile.openstreetmap.org/{z}/{x}/{y}.png
 ```
 
-L'atribució visible és:
+La interfície manté visible l'atribució:
 
 ```text
 © OpenStreetMap contributors
 ```
 
-Quan l'usuari activa OSM, **el navegador contacta directament amb `tile.openstreetmap.org`**. Com en qualsevol petició web, aquest tercer pot rebre metadades de xarxa normals com IP i User-Agent. Catatrens no utilitza un proxy per ocultar aquesta connexió.
+Quan l'usuari activa OSM, **el navegador contacta directament amb `tile.openstreetmap.org`**. Com en qualsevol petició web, aquest tercer pot rebre metadades de xarxa normals com la IP i el User-Agent.
 
 El servidor públic d'OSM no és un CDN comercial gratuït. Per a un desplegament públic amb trànsit significatiu cal utilitzar un proveïdor adequat o infraestructura pròpia i respectar la política de tesel·les d'OSM.
 
@@ -360,7 +416,7 @@ El servidor públic d'OSM no és un CDN comercial gratuït. Per a un desplegamen
 
 # Seguretat
 
-Catatrens té deliberadament una superfície de servidor reduïda:
+Ferrocat 1.0 té deliberadament una superfície de servidor reduïda:
 
 - no hi ha comptes d'usuari;
 - no hi ha login;
@@ -368,17 +424,17 @@ Catatrens té deliberadament una superfície de servidor reduïda:
 - no hi ha uploads;
 - els visitants no escriuen fitxers al servidor;
 - la major part de la interacció i del model s'executa al navegador;
-- els datasets entregats al frontend són públics.
+- els datasets lliurats al frontend són públics.
 
 ## Payload del component
 
-**Tot el que s'envia mitjançant `rail_app(data=...)` és visible per al client.** No s'hi han d'incloure mai API keys, tokens, credencials, secrets d'entorn ni dades privades.
+**Tot el que s'envia mitjançant `rail_app(data=...)` és visible per al client.** No s'hi han d'incloure mai claus API, tokens, credencials, secrets d'entorn ni dades privades.
 
-Els secrets d'un desplegament futur, si fossin necessaris, s'han de guardar en variables d'entorn o a `.streamlit/secrets.toml`, que està ignorat per Git. No s'han d'inserir a `frontend/app.js`, `frontend/index.html`, `data/` ni al payload del component.
+Els secrets d'un desplegament futur, si fossin necessaris, s'han de guardar en variables d'entorn o a `.streamlit/secrets.toml`, que està ignorat per Git. No s'han d'inserir al frontend ni al payload del component.
 
 ## Estat del navegador
 
-`sessionStorage` és entrada controlada pel client. En restaurar l'estat es validen:
+`sessionStorage` és una entrada controlada pel client. En restaurar l'estat es validen:
 
 - IDs i nombre màxim de línies;
 - colors contra una allowlist;
@@ -396,7 +452,9 @@ Un JSON corrupte s'ignora i s'elimina sense fer caure el component.
 
 ## HTML/SVG dinàmic
 
-El frontend conserva `innerHTML` en diversos renderers per evitar una reescriptura visual de risc. Els textos variables passen per `esc()` o `textContent`, i els atributs procedents de l'estat persistit es validen abans de renderitzar. La classificació detallada dels punts de renderització és a `docs/SECURITY-HARDENING.md`.
+El frontend conserva `innerHTML` en diversos renderitzadors per evitar una reescriptura visual de risc. Els textos variables passen per `esc()` o `textContent`, i els atributs procedents de l'estat persistit es validen abans de renderitzar.
+
+La classificació detallada és a [`docs/SECURITY-HARDENING.md`](docs/SECURITY-HARDENING.md).
 
 ## Comprovacions locals
 
@@ -407,6 +465,7 @@ pip-audit -r requirements.txt
 python -m py_compile app.py download_mobility.py
 pytest
 node --check frontend/app.js
+node tests/frontend_state_security.test.js
 ```
 
 ## Automatització a GitHub
@@ -417,9 +476,9 @@ El repositori incorpora:
 - `pip-audit` en pull requests, `main` i execució programada;
 - tests de seguretat del downloader;
 - CodeQL per Python i JavaScript/TypeScript;
-- Gitleaks per detectar secrets al repositori i historial.
+- Gitleaks per detectar secrets al repositori i a l'historial.
 
-Les GitHub Actions externes estan fixades per SHA i documentades amb la seva versió humana.
+Les GitHub Actions externes estan fixades per SHA quan és viable i documentades amb la seva versió humana.
 
 Consulta també [`SECURITY.md`](SECURITY.md).
 
@@ -438,7 +497,7 @@ git switch -c chore/update-dependencies
 # 2. Revisa requirements.in i les noves versions candidates.
 # 3. Actualitza deliberadament els pins exactes de requirements.txt.
 
-# 4. Instal·la des de zero en un entorn virtual net.
+# 4. Instal·la en un entorn virtual net.
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m pip check
 
@@ -451,7 +510,7 @@ python -m streamlit run app.py
 
 `pip-tools` està disponible a `requirements-dev.txt` si es vol evolucionar cap a un lock complet de dependències transitives. Qualsevol regeneració amb `pip-compile` s'ha de revisar com un canvi de dependències, no executar-se automàticament sobre `main`.
 
-Dependabot obre PRs; no actualitza `main` directament.
+Dependabot obre pull requests; no actualitza `main` directament.
 
 ---
 
@@ -472,17 +531,18 @@ Per a `main`:
 
 - bloquejar force pushes;
 - bloquejar l'eliminació de la branca;
-- exigir els checks de seguretat abans de merge;
+- exigir els checks de seguretat abans del merge;
 - requerir pull request quan hi hagi més d'un col·laborador;
 - si el projecte té un únic desenvolupador, valorar no exigir PR obligatori si perjudica el flux de treball.
 
-A `Settings → Security` / `Code security and analysis`, habilita quan estigui disponible:
+A `Settings → Security` o `Code security and analysis`, habilita quan estigui disponible:
 
 - Dependabot alerts;
 - Dependabot security updates;
 - Secret scanning;
 - Push protection;
-- Code scanning.
+- Code scanning;
+- Private Vulnerability Reporting.
 
 Aquests controls són configuració externa de GitHub i no s'activen automàticament des del codi.
 
@@ -490,7 +550,7 @@ Aquests controls són configuració externa de GitHub i no s'activen automàtica
 
 # Llicències, reutilització i atribucions
 
-Les llicències de les dades, cartografia, tipografies i codi són independents.
+Les llicències de les dades, la cartografia, les tipografies i el codi són independents.
 
 ## Mobilitat — Ministerio de Transportes y Movilidad Sostenible
 
@@ -544,11 +604,11 @@ Informació:
 
 ## Tipografies
 
-La UI utilitza Inter, Space Grotesk i IBM Plex Mono, distribuïdes sota **SIL Open Font License 1.1**. Actualment es carreguen mitjançant Google Fonts. Si s'autoallotgen, cal conservar les llicències OFL corresponents.
+La interfície utilitza Inter, Space Grotesk i IBM Plex Mono, distribuïdes sota **SIL Open Font License 1.1**. Actualment es carreguen mitjançant Google Fonts. Si s'autoallotgen, cal conservar les llicències OFL corresponents.
 
 ## Llicència del codi
 
-La llicència dels datasets de tercers no concedeix automàticament una llicència sobre el codi de Catatrens. Si es vol distribuir el codi sota una llicència determinada, el repositori ha d'incorporar explícitament un fitxer `LICENSE`.
+La llicència dels datasets de tercers no concedeix automàticament una llicència sobre el codi de Ferrocat. Si es vol distribuir el codi sota una llicència determinada, el repositori ha d'incorporar explícitament un fitxer `LICENSE`.
 
 ---
 
@@ -556,11 +616,13 @@ La llicència dels datasets de tercers no concedeix automàticament una llicènc
 
 ## Falten dades
 
+Executa:
+
 ```bash
 python download_mobility.py
 ```
 
-Comprova també:
+Comprova també que existeixin:
 
 ```text
 reference/municipis_catalunya.csv
@@ -579,19 +641,23 @@ python -m pip install -r requirements.txt
 
 Comprova la connexió a Internet, l'accés a `tile.openstreetmap.org`, la consola del navegador i possibles bloquejadors de contingut.
 
-## Dades antigues
+## Les dades semblen antigues
+
+Executa:
 
 ```bash
 python download_mobility.py
 ```
 
-Catatrens utilitza l'últim `Viajes_municipios` anunciat pel RSS oficial del MITMS.
+Ferrocat utilitza l'últim `Viajes_municipios` anunciat pel RSS oficial del MITMS.
 
 ---
 
 # Avís metodològic
 
-Catatrens és una eina de simulació. La matriu OD és observada, però la captació ferroviària, vehicles evitats, CO₂, temps i cost són estimacions derivades del model i dels paràmetres configurats. No substitueix un estudi oficial de demanda ni un projecte d'enginyeria ferroviària.
+Ferrocat és una eina de simulació.
+
+La matriu OD és observada, però la captació ferroviària, els vehicles evitats, el CO₂, els temps de trajecte i el cost són estimacions derivades del model i dels paràmetres configurats. No substitueix un estudi oficial de demanda ni un projecte d'enginyeria ferroviària.
 
 Per a planificació real serien necessaris, entre altres, models calibrats, distribució temporal i motius de viatge, accessibilitat real, xarxa viària, transbordaments, capacitat, costos operatius, inversió detallada, efectes ambientals i demanda induïda.
 
