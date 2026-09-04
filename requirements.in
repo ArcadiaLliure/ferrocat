@@ -1,4 +1,4 @@
-# Direct runtime dependencies. Compile/update deliberately; production uses exact pins in requirements.txt.
+# Dependències directes d'execució. Actualitza-les deliberadament; producció usa versions exactes a requirements.txt.
 streamlit
 pandas
 pyarrow
