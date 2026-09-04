@@ -1,0 +1,11 @@
+{
+  "source": "MITMS Estudio de movilidad con Big Data - estudios_basicos/por-municipios/viajes",
+  "base_url": "https://movilidad-opendata.mitma.es",
+  "days": [
+    "2025-12-08"
+  ],
+  "n_days": 1,
+  "generated_at": "2026-09-04T10:50:15",
+  "aggregation": "Últim dia municipal publicat al RSS; totes les franges i segments del dia agregats.",
+  "scope": "Origen i destí en zones MITMS associades a municipis de Catalunya."
+}
