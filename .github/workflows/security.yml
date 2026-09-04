@@ -45,8 +45,33 @@ jobs:
       - name: Compile Python entry points
         run: python -m py_compile app.py download_mobility.py
 
-      - name: Run tests
+      - name: Run Python tests
         run: python -m pytest -q
 
       - name: Check JavaScript syntax
         run: node --check frontend/app.js
+
+      - name: Test persisted frontend state validation
+        run: node tests/frontend_state_security.test.js
+
+      - name: Smoke-test Streamlit startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m streamlit run app.py \
+            --server.headless true \
+            --server.address 127.0.0.1 \
+            --server.port 8501 \
+            > /tmp/ferrocat-streamlit.log 2>&1 &
+          streamlit_pid=$!
+          trap 'kill "$streamlit_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8501/_stcore/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat /tmp/ferrocat-streamlit.log
+          exit 1
