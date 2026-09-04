@@ -7,6 +7,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+FERROCAT_VERSION = "1.0"
+
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
 REFERENCE = ROOT / "reference"
@@ -21,13 +23,13 @@ REL_PARQUET = DATA / "municipi_ine_to_mitma.parquet"
 META_JSON = DATA / "metadata.json"
 
 st.set_page_config(
-    page_title="Simulador de línies de tren — Catalunya",
+    page_title="Ferrocat — Simulador ferroviari de Catalunya",
     page_icon="🚆",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# The simulator itself owns the complete viewport. Strip Streamlit chrome/padding.
+# El simulador ocupa tot el viewport. Eliminem el chrome i el padding de Streamlit.
 st.markdown(
     """
     <style>
@@ -131,7 +133,7 @@ except FileNotFoundError as exc:
 if not hasattr(st.components, "v2"):
     st.error(
         'Aquesta versió necessita Streamlit >= 1.62. Executa:\n'
-        'python -m pip install -U "streamlit>=1.62"'
+        'python -m pip install -r requirements.txt'
     )
     st.stop()
 
@@ -139,9 +141,9 @@ template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
 
-# V2 executes inline in the Streamlit page instead of in a fixed-height iframe.
-# Existing client code is wrapped in the component renderer and receives data
-# through `data`, while all user interaction remains browser-local.
+# Components V2 s'executa inline dins la pàgina de Streamlit i no en un iframe
+# d'alçada fixa. El codi de client rep les dades mitjançant `data` i tota la
+# interacció de l'usuari continua sent local al navegador.
 js = f"""export default function(component) {{
   const {{ parentElement, data }} = component;
   const MUNICIPIS = data.municipis || [];
@@ -154,15 +156,15 @@ js = f"""export default function(component) {{
 """
 
 rail_app = st.components.v2.component(
-    "catatrens_fullscreen",
+    "ferrocat_fullscreen",
     html=html_fragment,
     css=css,
     js=js,
     isolate_styles=True,
 )
 
-# SECURITY: everything passed to the browser component is public to the client.
-# Never put API keys, tokens, credentials, environment secrets or private data here.
+# SEGURETAT: tot el que es passa al component del navegador és públic per al client.
+# No hi posis mai claus API, tokens, credencials, secrets d'entorn ni dades privades.
 rail_app(
     data={
         "municipis": municipis,
@@ -170,7 +172,7 @@ rail_app(
         "od_pairs": od_pairs,
         "meta": meta,
     },
-    key="catatrens_fullscreen_v9",
+    key="ferrocat_fullscreen_v1_0",
     width="stretch",
     height="content",
 )
