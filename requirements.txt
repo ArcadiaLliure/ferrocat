@@ -1,4 +1,4 @@
-# Exact direct runtime pins tested for Ferrocat's supported Python/Streamlit stack.
+# Versions exactes de dependències directes provades per a Ferrocat 1.0.
 streamlit==1.62.0
 pandas==2.2.3
 pyarrow==25.0.1
