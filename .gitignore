@@ -1,8 +1,19 @@
 __pycache__/
 *.pyc
+*.pyo
+
 .venv/
 venv/
+
 .env
+.env.*
+!.env.example
+
 .streamlit/secrets.toml
+
+*.pem
+*.key
+*.p12
+*.pfx
 
 data/raw/

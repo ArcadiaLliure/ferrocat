@@ -1,4 +1,6 @@
-streamlit>=1.62
-pandas>=2.2
-pyarrow>=16
-requests>=2.32
+# Exact direct runtime pins tested for Ferrocat's supported Python/Streamlit stack.
+streamlit==1.62.0
+pandas==2.2.3
+pyarrow==25.0.1
+requests==2.34.2
+defusedxml==0.7.1

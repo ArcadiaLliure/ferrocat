@@ -1,0 +1,6 @@
+# Direct runtime dependencies. Compile/update deliberately; production uses exact pins in requirements.txt.
+streamlit
+pandas
+pyarrow
+requests
+defusedxml
