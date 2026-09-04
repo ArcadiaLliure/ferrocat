@@ -161,6 +161,8 @@ rail_app = st.components.v2.component(
     isolate_styles=True,
 )
 
+# SECURITY: everything passed to the browser component is public to the client.
+# Never put API keys, tokens, credentials, environment secrets or private data here.
 rail_app(
     data={
         "municipis": municipis,
@@ -168,7 +170,7 @@ rail_app(
         "od_pairs": od_pairs,
         "meta": meta,
     },
-    key="catatrens_fullscreen_v8",
+    key="catatrens_fullscreen_v9",
     width="stretch",
     height="content",
 )
