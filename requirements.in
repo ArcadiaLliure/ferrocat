@@ -1,0 +1,6 @@
+# Dependències directes d'execució. Actualitza-les deliberadament; producció usa versions exactes a requirements.txt.
+streamlit
+pandas
+pyarrow
+requests
+defusedxml

@@ -1,4 +1,4 @@
-/* Catatrens client engine: multiple lines, MITMS OD, procedural/OSM, zero Streamlit reruns. */
+/* Motor de client de Ferrocat: múltiples línies, OD MITMS, mapa procedural/OSM i zero reruns de Streamlit. */
 const COLORS_LINIA = ['#e63946','#2a9d8f','#f4a300','#8338ec','#3a86ff','#06d6a0','#ff6b35','#c9184a'];
 const BASE_VB = {x:0,y:0,w:800,h:660};
 const MARGE_PROJECCIO = 30;
@@ -34,6 +34,35 @@ const parametres = {
   radiCaptacio:8,
 };
 
+// SEGURETAT: sessionStorage és una entrada controlada per l'usuari. L'estat
+// persistit ha de passar per esquemes i allowlists explícits abans que pugui
+// influir en atributs HTML/SVG o en els càlculs.
+const STATE_KEY = 'ferrocat-state-v1.0';
+const VALID_COLORS = new Set(COLORS_LINIA);
+const VALID_LAYER_MODES = new Set(['procedural','osm']);
+const LINE_ID_RE = /^linia-\d+$/;
+const MAX_LINES = 100;
+const MAX_STATIONS_PER_LINE = Math.max(1, MUNICIPIS.length);
+const MAX_LINE_NAME_LENGTH = 80;
+const MAX_LINE_COUNTER = 1_000_000;
+const PARAM_LIMITS = Object.freeze({
+  velocitatTren:[40,160],
+  frequencia:[0.5,6],
+  velocitatCotxe:[30,110],
+  tempsAcces:[2,15],
+  tempsParada:[0.5,3],
+  intensitatMobilitat:[1,1.6],
+  sensibilitatDistancia:[1,1.8],
+  sensibilitat:[0.02,0.2],
+  biaix:[-1,3],
+  fraccioCotxeActual:[0.4,1],
+  costPerKm:[4,30],
+  emissioPerKm:[0.08,0.25],
+  diesPerAny:[1,366],
+  radiCaptacio:[2,20],
+});
+const PARAM_DEFAULTS = Object.freeze({...parametres});
+
 const MUNICIPI_PER_ID = Object.fromEntries(MUNICIPIS.map(m => [String(m.id), m]));
 const OD_MAP = new Map(OD_PAIRS.map(([a,b,v]) => [`${a}|${b}`, Number(v)]));
 const svg = parentElement.querySelector('#mapa');
@@ -45,10 +74,12 @@ function byId(id){
   return parentElement.querySelector(`#${id}`);
 }
 
-
 function setLayerHTML(id, html){
   const el=byId(id);
-  if(!el){ console.warn(`[Catatrens] Falta #${id}`); return false; }
+  if(!el){ console.warn(`[Ferrocat] Falta #${id}`); return false; }
+  // Aquest renderitzador manté cadenes SVG/HTML per rendiment. El text variable
+  // passa per esc(); els atributs no textuals provenen d'estat validat o de
+  // càlculs numèrics. No hi passis mai estat del navegador sense sanejar.
   el.innerHTML=html;
   return true;
 }
@@ -64,31 +95,124 @@ function dataLabel(){
 function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
 function esc(s){ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+function finiteNumber(value,fallback,min=-Infinity,max=Infinity){
+  if(typeof value!=='number' || !Number.isFinite(value))return fallback;
+  if(value<min || value>max)return fallback;
+  return value;
+}
+function finiteInput(value,fallback,min=-Infinity,max=Infinity){
+  const n=Number(value);
+  return Number.isFinite(n) && n>=min && n<=max ? n : fallback;
+}
+function sanitizeLineName(value,fallback='Línia'){
+  const text=(value===null || value===undefined)?'':String(value);
+  const trimmed=text.trim().slice(0,MAX_LINE_NAME_LENGTH);
+  return trimmed || String(fallback).slice(0,MAX_LINE_NAME_LENGTH);
+}
+function sanitizeParameters(raw){
+  const out={...PARAM_DEFAULTS};
+  if(!raw || typeof raw!=='object' || Array.isArray(raw))return out;
+  Object.entries(PARAM_LIMITS).forEach(([key,[min,max]])=>{
+    out[key]=finiteNumber(raw[key],PARAM_DEFAULTS[key],min,max);
+  });
+  return out;
+}
+function sanitizeViewBox(raw){
+  if(!raw || typeof raw!=='object' || Array.isArray(raw))return {...BASE_VB};
+  const minW=BASE_VB.w/16,maxW=BASE_VB.w*2.5;
+  const w=finiteNumber(raw.w,BASE_VB.w,minW,maxW);
+  const expectedH=w*(BASE_VB.h/BASE_VB.w);
+  const h=finiteNumber(raw.h,expectedH,expectedH-0.001,expectedH+0.001);
+  return {
+    x:finiteNumber(raw.x,BASE_VB.x),
+    y:finiteNumber(raw.y,BASE_VB.y),
+    w,
+    h,
+  };
+}
+function sanitizeLines(raw){
+  if(!Array.isArray(raw))return [];
+  const out=[],seenIds=new Set();
+  for(const candidate of raw.slice(0,MAX_LINES)){
+    if(!candidate || typeof candidate!=='object' || Array.isArray(candidate))continue;
+    const id=typeof candidate.id==='string'?candidate.id:'';
+    if(!LINE_ID_RE.test(id) || seenIds.has(id))continue;
+    const color=VALID_COLORS.has(candidate.color)?candidate.color:null;
+    if(!color)continue;
+    const stationIds=[],seenStations=new Set();
+    if(Array.isArray(candidate.estacions)){
+      for(const rawId of candidate.estacions.slice(0,MAX_STATIONS_PER_LINE)){
+        const stationId=String(rawId);
+        if(!MUNICIPI_PER_ID[stationId] || seenStations.has(stationId))continue;
+        seenStations.add(stationId);stationIds.push(stationId);
+      }
+    }
+    if(!stationIds.length)continue;
+    const fallbackName=`Línia ${id.split('-')[1]}`;
+    out.push({
+      id,
+      nom:sanitizeLineName(candidate.nom,fallbackName),
+      color,
+      estacions:stationIds,
+      existingKm:finiteNumber(candidate.existingKm,0,0,100000),
+    });
+    seenIds.add(id);
+  }
+  return out;
+}
+function sanitizeState(raw){
+  if(!raw || typeof raw!=='object' || Array.isArray(raw))return null;
+  const safeLines=sanitizeLines(raw.linies);
+  const ids=new Set(safeLines.map(l=>l.id));
+  const maxId=safeLines.reduce((mx,l)=>Math.max(mx,Number(l.id.split('-')[1])||0),0);
+  const storedCounter=Math.floor(finiteNumber(raw.comptadorLinies,0,0,MAX_LINE_COUNTER));
+  const active=typeof raw.lineaActivaId==='string' && ids.has(raw.lineaActivaId)
+    ? raw.lineaActivaId : null;
+  return {
+    linies:safeLines,
+    comptadorLinies:Math.max(maxId,storedCounter),
+    lineaActivaId:active,
+    mostrarFluxos:typeof raw.mostrarFluxos==='boolean'?raw.mostrarFluxos:true,
+    mostrarComarques:typeof raw.mostrarComarques==='boolean'?raw.mostrarComarques:true,
+    layerMode:VALID_LAYER_MODES.has(raw.layerMode)?raw.layerMode:'procedural',
+    vb:sanitizeViewBox(raw.vb),
+    parametres:sanitizeParameters(raw.parametres),
+  };
+}
 function saveState(){
   try{
-    sessionStorage.setItem('catatrens-state-v8', JSON.stringify({
-      linies, comptadorLinies, lineaActivaId, mostrarFluxos, mostrarComarques,
-      layerMode, vb, parametres
-    }));
-  }catch{}
+    const safe=sanitizeState({
+      linies,comptadorLinies,lineaActivaId,mostrarFluxos,mostrarComarques,
+      layerMode,vb,parametres
+    });
+    if(safe)sessionStorage.setItem(STATE_KEY,JSON.stringify(safe));
+  }catch(err){
+    console.warn('[Ferrocat] No s’ha pogut desar l’estat local.',err);
+  }
 }
 function restoreState(){
   try{
-    const s=JSON.parse(sessionStorage.getItem('catatrens-state-v8')||'null');
-    if(!s)return;
-    linies=Array.isArray(s.linies)?s.linies:linies;
-    comptadorLinies=Number(s.comptadorLinies||0);
-    lineaActivaId=s.lineaActivaId??null;
-    mostrarFluxos=s.mostrarFluxos??true;
-    mostrarComarques=s.mostrarComarques??true;
-    layerMode=s.layerMode||'procedural';
-    if(s.vb)vb=s.vb;
-    if(s.parametres)Object.assign(parametres,s.parametres);
-  }catch{}
+    const raw=sessionStorage.getItem(STATE_KEY);
+    if(!raw)return;
+    const safe=sanitizeState(JSON.parse(raw));
+    if(!safe){sessionStorage.removeItem(STATE_KEY);return;}
+    linies=safe.linies;
+    comptadorLinies=safe.comptadorLinies;
+    lineaActivaId=safe.lineaActivaId;
+    mostrarFluxos=safe.mostrarFluxos;
+    mostrarComarques=safe.mostrarComarques;
+    layerMode=safe.layerMode;
+    vb=safe.vb;
+    Object.assign(parametres,safe.parametres);
+  }catch(err){
+    sessionStorage.removeItem(STATE_KEY);
+    console.warn('[Ferrocat] Estat local invàlid ignorat.',err);
+  }
 }
 restoreState();
 
-// Web Mercator + uniform scale: OSM, municipalities and comarca geometry align without distortion.
+// Web Mercator amb escala uniforme: OSM, municipis i geometria comarcal
+// queden alineats sense distorsió.
 function mercatorNorm(lon,lat){
   const x=(Number(lon)+180)/360;
   const cl=clamp(Number(lat),-85.05112878,85.05112878);
@@ -219,13 +343,15 @@ function calcularMetriquesLinia(linia){
 
 function seleccionarMunicipi(id){
   id=String(id);
+  if(!MUNICIPI_PER_ID[id])return;
   if(lineaActivaId===null){
+    if(linies.length>=MAX_LINES || comptadorLinies>=MAX_LINE_COUNTER)return;
     comptadorLinies++;
     const nova={id:'linia-'+comptadorLinies,nom:'Línia '+comptadorLinies,color:COLORS_LINIA[(comptadorLinies-1)%COLORS_LINIA.length],estacions:[id],existingKm:0};
     linies.push(nova);lineaActivaId=nova.id;
   }else{
     const l=linies.find(x=>x.id===lineaActivaId);if(!l){lineaActivaId=null;return;}
-    if(l.estacions.includes(id))return;l.estacions.push(id);
+    if(l.estacions.includes(id) || l.estacions.length>=MAX_STATIONS_PER_LINE)return;l.estacions.push(id);
   }
   saveState();render();
 }
@@ -237,7 +363,7 @@ function desferUltimaEstacio(){
 }
 function esborrarLinia(id){linies=linies.filter(l=>l.id!==id);if(lineaActivaId===id)lineaActivaId=null;saveState();render();}
 function editarLinia(id){lineaActivaId=id;saveState();render();}
-function renombrarLinia(id,nom){const l=linies.find(x=>x.id===id);if(l){l.nom=nom||l.nom;saveState();render();}}
+function renombrarLinia(id,nom){const l=linies.find(x=>x.id===id);if(l){l.nom=sanitizeLineName(nom,l.nom);saveState();render();}}
 
 function zoomFactor(){return BASE_VB.w/vb.w;}
 function actualitzaViewBox(){svg.setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);renderMapa();}
@@ -270,7 +396,7 @@ byId('cerca-input').addEventListener('input',e=>{const q=e.target.value.trim().t
 
 function renderComarques(){
   const capa=byId('capa-comarques');
-  if(!capa){ console.warn('[Catatrens] Falta #capa-comarques'); return; }
+  if(!capa){ console.warn('[Ferrocat] Falta #capa-comarques'); return; }
   if(!mostrarComarques){capa.innerHTML='';return;}let s='';
   COMARQUES.forEach(c=>c.anellsProjectats.forEach(poly=>{const d=poly.map(r=>'M '+r.map(([x,y])=>`${x.toFixed(1)} ${y.toFixed(1)}`).join(' L ')+' Z').join(' ');s+=`<path class="comarca-poligon"
   d="${d}"
@@ -282,7 +408,7 @@ function renderComarques(){
 }
 function renderHover(){
   const capa=byId('capa-hover');
-  if(!capa){ console.warn('[Catatrens] Falta #capa-hover'); return; }
+  if(!capa){ console.warn('[Ferrocat] Falta #capa-hover'); return; }
   const m=hoveredId?MUNICIPI_PER_ID[hoveredId]:null;
   if(!m){capa.innerHTML='';return;}
   const r=11/Math.max(zoomFactor(),.01);
@@ -293,7 +419,7 @@ function lonLatToTile(lon,lat,z){const n=2**z,r=lat*Math.PI/180;return [(lon+180
 function tileToLonLat(x,y,z){const n=2**z,lon=x/n*360-180,a=Math.PI-2*Math.PI*y/n;return [lon,180/Math.PI*Math.atan(Math.sinh(a))];}
 function renderOSM(){
   const capa=byId('capa-osm'),grid=byId('grid-bg'),bg=byId('map-bg');
-  if(!capa || !grid || !bg){ console.warn('[Catatrens] Capes OSM incompletes'); return; }
+  if(!capa || !grid || !bg){ console.warn('[Ferrocat] Capes OSM incompletes'); return; }
   if(layerMode!=='osm'){
     capa.innerHTML='';
     grid.style.display='';
@@ -383,7 +509,7 @@ function renderLlistaLinies(){
                    min="0"
                    max="${m.longitudKm.toFixed(1)}"
                    step=".5"
-                   value="${Number(l.existingKm||0).toFixed(1)}"> km
+                   value="${clamp(finiteNumber(l.existingKm,0,0,100000),0,m.longitudKm).toFixed(1)}"> km
           </span>
         </div>
 
@@ -412,7 +538,8 @@ function renderLlistaLinies(){
   box.querySelectorAll('[data-role="existing"]').forEach(i=>i.onchange=()=>{
     const l=linies.find(x=>x.id===i.dataset.id);
     if(l){
-      l.existingKm=Math.max(0,Number(i.value)||0);
+      const maxKm=calcularMetriquesLinia(l).longitudKm;
+      l.existingKm=finiteInput(i.value,0,0,maxKm);
       saveState();
       render();
     }
@@ -425,12 +552,14 @@ const defs=[['velocitatTren','v-velocitatTren',v=>v+' km/h'],['frequencia','v-fr
 defs.forEach(([k,label,format])=>{
   const input=byId('s-'+k), out=byId(label);
   if(!input || !out){
-    console.warn('[Catatrens] Control no trobat:', k, 'input=', !!input, 'label=', !!out);
+    console.warn('[Ferrocat] Control no trobat:', k, 'input=', !!input, 'label=', !!out);
     return;
   }
   input.value=parametres[k];
   const upd=()=>{
-    parametres[k]=parseFloat(input.value);
+    const [min,max]=PARAM_LIMITS[k];
+    parametres[k]=finiteInput(input.value,PARAM_DEFAULTS[k],min,max);
+    input.value=parametres[k];
     out.textContent=format(input.value);
     saveState();
     render();
@@ -445,5 +574,5 @@ const btnStop=byId('btn-atura-edicio'),btnUndo=byId('btn-desfes'),btnReset=byId(
 if(btnStop)btnStop.onclick=aturarEdicio;
 if(btnUndo)btnUndo.onclick=desferUltimaEstacio;
 if(btnReset)btnReset.onclick=()=>{linies=[];lineaActivaId=null;comptadorLinies=0;saveState();render();};
-if(layerSelect){layerSelect.value=layerMode;layerSelect.onchange=e=>{layerMode=e.target.value;saveState();renderMapa();};}
+if(layerSelect){layerSelect.value=layerMode;layerSelect.onchange=e=>{layerMode=VALID_LAYER_MODES.has(e.target.value)?e.target.value:'procedural';layerSelect.value=layerMode;saveState();renderMapa();};}
 render();

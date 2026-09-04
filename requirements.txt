@@ -1,4 +1,6 @@
-streamlit>=1.62
-pandas>=2.2
-pyarrow>=16
-requests>=2.32
+# Versions exactes de dependències directes provades per a Ferrocat 1.0.
+streamlit==1.62.0
+pandas==2.2.3
+pyarrow==25.0.1
+requests==2.34.2
+defusedxml==0.7.1

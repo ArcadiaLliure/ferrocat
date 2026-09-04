@@ -1,0 +1,77 @@
+name: Comprovacions de seguretat
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Obté el repositori
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Configura Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Instal·la dependències d'execució i seguretat
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Comprova la coherència de les dependències instal·lades
+        run: python -m pip check
+
+      - name: Audita les dependències Python
+        run: pip-audit -r requirements.txt
+
+      - name: Compila els punts d'entrada Python
+        run: python -m py_compile app.py download_mobility.py
+
+      - name: Executa els tests Python
+        run: python -m pytest -q
+
+      - name: Comprova la sintaxi JavaScript
+        run: node --check frontend/app.js
+
+      - name: Prova la validació de l'estat persistent del frontend
+        run: node tests/frontend_state_security.test.js
+
+      - name: Prova d'arrencada de Streamlit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m streamlit run app.py \
+            --server.headless true \
+            --server.address 127.0.0.1 \
+            --server.port 8501 \
+            > /tmp/ferrocat-streamlit.log 2>&1 &
+          streamlit_pid=$!
+          trap 'kill "$streamlit_pid" 2>/dev/null || true' EXIT
+
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8501/_stcore/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat /tmp/ferrocat-streamlit.log
+          exit 1
