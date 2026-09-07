@@ -16,4 +16,5 @@ venv/
 *.p12
 *.pfx
 
-data/raw/
+data/
+static/
