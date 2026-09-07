@@ -21,6 +21,8 @@ CAT_PROVINCES = ("08", "17", "25", "43")  # Barcelona, Girona, Lleida, Tarragona
 RSS_URL = f"{BASE_URL}/RSS.xml"
 USER_AGENT = "simulador-ferroviari-catalunya/1.0 (+OpenData MITMS)"
 
+ROOT = Path(__file__).resolve().parents[1]
+
 ALLOWED_DOWNLOAD_HOSTS = frozenset({"movilidad-opendata.mitma.es"})
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 MAX_REDIRECTS = 5
@@ -426,19 +428,9 @@ def build_dataset(days: list[DownloadedDay], relation: pd.DataFrame, out_dir: Pa
     print(f"  Dies:    {', '.join(meta['days'])}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Descarrega i prepara la matriu OD municipal MITMS només per Catalunya."
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=Path(__file__).resolve().parent / "data",
-        help="Directori on es guardaran els fitxers raw i els Parquet processats.",
-    )
-    args = parser.parse_args()
-
-    data_dir = args.data_dir.resolve()
+def run(data_dir: Path) -> int:
+    """Executa el pipeline MITMS sobre el directori data/ indicat."""
+    data_dir = Path(data_dir).resolve()
     raw_dir = data_dir / "raw"
     session = request_session()
 
@@ -454,6 +446,20 @@ def main() -> int:
     print("=== Processament ===")
     build_dataset(days, relation, data_dir)
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Descarrega i prepara la matriu OD municipal MITMS només per Catalunya."
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=ROOT / "data",
+        help="Directori on es guardaran els fitxers raw i els Parquet processats.",
+    )
+    args = parser.parse_args()
+    return run(args.data_dir)
 
 
 if __name__ == "__main__":

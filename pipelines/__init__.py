@@ -1,1 +1,1 @@
-"""Reproducible offline data pipelines for Ferrocat."""
+"""Pipelines offline i reproduïbles de Ferrocat."""

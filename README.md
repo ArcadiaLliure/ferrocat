@@ -70,9 +70,9 @@ frontend/
 ```text
 ferrocat/
 ├── app.py
-├── download_mobility.py
 ├── requirements.in
 ├── requirements.txt
+├── requirements-pipeline.txt
 ├── requirements-dev.txt
 ├── README.md
 ├── SECURITY.md
@@ -84,6 +84,12 @@ ferrocat/
 │       ├── security.yml
 │       ├── codeql.yml
 │       └── gitleaks.yml
+│
+├── pipelines/
+│   ├── __init__.py
+│   ├── PREPARAR_FERROCAT.py
+│   ├── download_mobility.py
+│   └── README.md
 │
 ├── frontend/
 │   ├── index.html
@@ -101,15 +107,21 @@ ferrocat/
 ├── docs/
 │   └── SECURITY-HARDENING.md
 │
+├── static/
+│   ├── roads/               # generat; no es versiona
+│   └── terrain/             # generat; no es versiona
+│
 └── data/
     ├── README.md
     ├── od_catalunya.parquet
     ├── municipi_ine_to_mitma.parquet
     ├── metadata.json
-    └── raw/                 # local; no es versiona
+    ├── rail/                # generat
+    ├── terrain/             # generat
+    └── raw/                 # cache local; no es versiona
 ```
 
-`reference/` conté dades estàtiques versionades amb el projecte. `data/` conté els datasets processats que consumeix l'aplicació i `data/raw/` és la caché reproduïble de les descàrregues originals del MITMS.
+`reference/` conté dades estàtiques petites versionades amb el projecte. `data/` conté datasets processats i `static/roads/` i `static/terrain/` contenen artefactes cartogràfics generats per al navegador. `data/raw/` és la cache reproduïble de les descàrregues originals. Els datasets grans generats no s'han de versionar a Git; s'han de preparar o provisionar al desplegament.
 
 ---
 
@@ -120,6 +132,10 @@ ferrocat/
 - Connexió a Internet per descarregar dades MITMS i, si s'activa, per carregar les tesel·les d'OpenStreetMap i les tipografies de Google Fonts.
 
 Les dependències directes de producció es documenten a `requirements.in`. Les versions utilitzades en producció estan fixades exactament a `requirements.txt` per fer els desplegaments reproduïbles.
+
+Les dependències necessàries **només per construir els datasets** es mantenen separades a `requirements-pipeline.txt`. Inclouen, entre d'altres, NumPy, PyProj, Shapely, GeoPandas, Pillow i **`scikit-image`**.
+
+> L'import Python és `from skimage import ...`, però el paquet que s'instal·la amb `pip` es diu `scikit-image`. No s'ha d'afegir el paquet `skimage` als requirements.
 
 ---
 
@@ -148,12 +164,20 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-## 3. Instal·lar les dependències de producció
+## 3. Instal·lar les dependències
+
+Per executar l'aplicació:
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip check
+```
+
+Per **preparar o actualitzar els datasets**:
+
+```bash
+python -m pip install -r requirements-pipeline.txt
 ```
 
 Per executar tests i eines de seguretat:
@@ -164,67 +188,144 @@ python -m pip install -r requirements-dev.txt
 
 ---
 
-# Preparació de les dades MITMS
+# Preparació de dades
 
-Ferrocat necessita aquests fitxers processats:
-
-```text
-data/od_catalunya.parquet
-data/municipi_ine_to_mitma.parquet
-data/metadata.json
-```
-
-Els fitxers poden estar ja versionats al repositori. Per actualitzar-los amb l'última matriu municipal publicada:
+Ferrocat disposa d'un únic punt d'entrada per construir els datasets offline:
 
 ```bash
-python download_mobility.py
+python -m pipelines.PREPARAR_FERROCAT
 ```
 
-El downloader:
+Aquest pipeline prepara, segons la configuració actual:
 
-1. consulta el `RSS.xml` oficial del MITMS;
-2. detecta directament l'últim fitxer `YYYYMMDD_Viajes_municipios.csv.gz` publicat;
-3. descarrega la relació entre municipis INE i zones MITMS;
-4. descarrega únicament l'última matriu diària disponible;
-5. filtra els orígens i destinacions de Catalunya;
-6. agrega les franges i segments del dia;
-7. genera els dos Parquet i `metadata.json`.
+1. mobilitat OD municipal del MITMS;
+2. carreteres ICGC amb LOD;
+3. infraestructura ferroviària RTT de l'ICGC;
+4. serveis de Rodalies Renfe i FGC;
+5. alta velocitat, Metro i TRAM a partir d'IGR-RT CNIG/IGN;
+6. topografia ICGC, incloent DEM, corbes de nivell i hillshade;
+7. metadades i atribucions necessàries per a la publicació.
 
-No prova dates una a una.
+## Execució selectiva
 
-Els fitxers originals es desen a:
+```bash
+python -m pipelines.PREPARAR_FERROCAT --only mobility
+python -m pipelines.PREPARAR_FERROCAT --only roads
+python -m pipelines.PREPARAR_FERROCAT --only infrastructure
+python -m pipelines.PREPARAR_FERROCAT --only services
+python -m pipelines.PREPARAR_FERROCAT --only terrain
+python -m pipelines.PREPARAR_FERROCAT --only overview
+```
+
+Per forçar una actualització de les fonts cachejades:
+
+```bash
+python -m pipelines.PREPARAR_FERROCAT --refresh
+```
+
+També es poden ometre blocs en una execució completa:
+
+```bash
+python -m pipelines.PREPARAR_FERROCAT --skip-mobility
+python -m pipelines.PREPARAR_FERROCAT --skip-roads
+python -m pipelines.PREPARAR_FERROCAT --skip-infrastructure
+python -m pipelines.PREPARAR_FERROCAT --skip-services
+python -m pipelines.PREPARAR_FERROCAT --skip-terrain
+```
+
+## Mobilitat MITMS
+
+La implementació específica de mobilitat es manté a:
 
 ```text
-data/raw/
+pipelines/download_mobility.py
 ```
 
-Aquest directori està exclòs de Git.
+L'orquestrador la crida automàticament. Si només es vol actualitzar la mobilitat:
 
-## Proteccions del downloader
+```bash
+python -m pipelines.download_mobility
+```
 
-El pipeline tracta la xarxa i els fitxers remots com a entrada no confiable, encara que la font sigui oficial:
+La sortida principal és:
 
-- només permet HTTPS;
-- només permet hosts explícitament autoritzats del MITMS;
-- valida cada redirecció abans de seguir-la;
-- limita el nombre de redireccions;
-- aplica timeouts de connexió i lectura;
-- reintenta únicament errors transitoris (`429`, `500`, `502`, `503`, `504`), amb backoff i un nombre finit de reintents;
-- limita la mida del RSS;
-- limita la mida de cada descàrrega;
-- comprova `Content-Length` quan existeix i compta també els bytes realment rebuts;
-- elimina els fitxers `.part` en cas d'error;
-- només publica el fitxer final després d'una descàrrega completa;
-- analitza XML amb `defusedxml`;
-- processa els CSV gzip per chunks;
-- imposa un límit defensiu de files per dataset;
-- valida les columnes obligatòries `origen`, `destino` i `viajes`.
+```text
+data/
+├── od_catalunya.parquet
+├── municipi_ine_to_mitma.parquet
+└── metadata.json
+```
 
-Els límits són constants explícites a `download_mobility.py` i s'han d'ajustar deliberadament si el format oficial canvia legítimament.
+Els fitxers originals es desen sota `data/raw/` i no s'han de versionar.
 
----
+## Carreteres
+
+La capa viària es prepara des de l'ICGC i es publica per LOD:
+
+```text
+static/roads/
+├── manifest.json
+├── overview.json
+├── lod0/
+├── lod1/
+├── lod2/
+└── lod3/
+```
+
+El `manifest.json` és l'índex autoritatiu de les tesel·les disponibles.
+
+## Ferrocarril i transport públic
+
+Les sortides principals són:
+
+```text
+data/rail/
+├── infrastructure.geoparquet
+├── infrastructure.runtime.json
+├── infrastructure.metadata.json
+├── services.runtime.json
+├── services.metadata.json
+└── stations.runtime.json
+```
+
+Les geometries de serveis i infraestructura tenen orígens diferents i no s'han de confondre:
+
+- RTT ICGC: infraestructura física;
+- GTFS Renfe/FGC: serveis i parades;
+- IGR-RT CNIG/IGN: alta velocitat UIC, Metro i TRAM físics.
+
+## Topografia
+
+La pipeline genera:
+
+```text
+data/terrain/
+├── terrain_manifest.json
+├── terrain_tiles.parquet
+├── coarse.runtime.json
+├── metadata.json
+└── tiles/*.bin
+
+static/terrain/
+├── contours.json
+└── hillshade.png
+```
+
+Per defecte, els tiles DEM es construeixen a 100 m i el runtime interactiu coarse a 500 m.
+
+## Atribucions
+
+La pipeline genera:
+
+```text
+data/attributions.json
+```
+
+Aquest fitxer conté les atribucions de les fonts utilitzades. La interfície pública ha de mantenir visibles les atribucions que corresponguin a les capes mostrades.
 
 # Arrencar Ferrocat
+
+La pipeline activa `enableStaticServing = true` a `.streamlit/config.toml` perquè Streamlit pugui servir els artefactes de `static/`.
 
 Des del directori arrel:
 
@@ -244,19 +345,19 @@ http://localhost:8501
 
 ## 1. Preparar el repositori
 
-Comprova que el repositori contingui com a mínim:
+Comprova que el repositori contingui com a mínim el codi:
 
 ```text
 app.py
 requirements.txt
 frontend/
 reference/
-data/od_catalunya.parquet
-data/municipi_ine_to_mitma.parquet
-data/metadata.json
+pipelines/
 ```
 
-No cal pujar `data/raw/`.
+Els datasets grans de `data/`, `static/roads/` i `static/terrain/` són artefactes generats. **No s'han de pujar a Git només per desplegar-los** si superen una mida raonable. El desplegament ha de garantir que aquests artefactes estiguin presents al filesystem abans d'arrencar l'aplicació, ja sigui preparant-los prèviament o provisionant-los des d'un storage extern.
+
+`data/raw/` no s'ha de pujar a Git.
 
 ## 2. Crear l'aplicació
 
@@ -270,14 +371,13 @@ No cal pujar `data/raw/`.
 
 Streamlit instal·larà les dependències de `requirements.txt`.
 
-Ferrocat **no executa `download_mobility.py` en arrencar**. Les dades publicades s'actualitzen deliberadament abans de fer push:
+Ferrocat **no executa els pipelines en cada arrencada ni en cada visita**. Les dades s'han de preparar deliberadament:
 
 ```bash
-python download_mobility.py
-git add data/od_catalunya.parquet data/municipi_ine_to_mitma.parquet data/metadata.json
-git commit -m "Actualitza mobilitat MITMS"
-git push
+python -m pipelines.PREPARAR_FERROCAT
 ```
+
+o només el bloc que calgui actualitzar. Els artefactes grans generats s'han de publicar mitjançant el mecanisme de desplegament escollit, no necessàriament mitjançant Git.
 
 Els canvis de seguretat del repositori no desactiven XSRF ni CORS de Streamlit i no requereixen cap secret per executar l'aplicació.
 
@@ -459,10 +559,10 @@ La classificació detallada és a [`docs/SECURITY-HARDENING.md`](docs/SECURITY-H
 ## Comprovacions locals
 
 ```bash
-python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -r requirements.txt -r requirements-pipeline.txt -r requirements-dev.txt
 python -m pip check
 pip-audit -r requirements.txt
-python -m py_compile app.py download_mobility.py
+python -m py_compile app.py pipelines/PREPARAR_FERROCAT.py pipelines/download_mobility.py
 pytest
 node --check frontend/app.js
 node tests/frontend_state_security.test.js
@@ -498,7 +598,7 @@ git switch -c chore/update-dependencies
 # 3. Actualitza deliberadament els pins exactes de requirements.txt.
 
 # 4. Instal·la en un entorn virtual net.
-python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -r requirements.txt -r requirements-pipeline.txt -r requirements-dev.txt
 python -m pip check
 
 # 5. Audita i prova.
@@ -589,6 +689,24 @@ Límits comarcals derivats de geoinformació de l'Institut Cartogràfic
 i Geològic de Catalunya (ICGC), utilitzada sota llicència CC BY 4.0.
 ```
 
+## Renfe
+
+Les dades de Rodalies/Cercanías utilitzades pel pipeline provenen de fonts obertes de Renfe. La pipeline registra la font i la llicència corresponent a `data/attributions.json`. En una publicació pública s'ha de mantenir l'atribució visible corresponent.
+
+## FGC
+
+El pipeline utilitza el GTFS publicat per Ferrocarrils de la Generalitat de Catalunya. Abans de redistribuir el ZIP original o derivats fora del context previst, s'ha de verificar el camp de llicència vigent del dataset al portal de Dades Obertes FGC.
+
+## IGR-RT CNIG/IGN
+
+Ferrocat utilitza IGR-RT per completar geometries d'alta velocitat, Metro i TRAM. La pipeline genera l'atribució:
+
+```text
+Obra derivada de IGR-RT 2026 CC-BY 4.0 scne.es
+```
+
+i la incorpora a `data/attributions.json`.
+
 ## OpenStreetMap
 
 Les dades d'OpenStreetMap estan disponibles sota **ODbL 1.0**. Cal mantenir una atribució visible:
@@ -616,11 +734,13 @@ La llicència dels datasets de tercers no concedeix automàticament una llicènc
 
 ## Falten dades
 
-Executa:
+Executa el pipeline complet:
 
 ```bash
-python download_mobility.py
+python -m pipelines.PREPARAR_FERROCAT
 ```
+
+o el bloc corresponent amb `--only`.
 
 Comprova també que existeixin:
 
@@ -643,10 +763,16 @@ Comprova la connexió a Internet, l'accés a `tile.openstreetmap.org`, la consol
 
 ## Les dades semblen antigues
 
-Executa:
+Per actualitzar totes les fonts cachejades:
 
 ```bash
-python download_mobility.py
+python -m pipelines.PREPARAR_FERROCAT --refresh
+```
+
+Per actualitzar només MITMS:
+
+```bash
+python -m pipelines.PREPARAR_FERROCAT --only mobility
 ```
 
 Ferrocat utilitza l'últim `Viajes_municipios` anunciat pel RSS oficial del MITMS.
@@ -667,5 +793,8 @@ Per a planificació real serien necessaris, entre altres, models calibrats, dist
 
 - Ministerio de Transportes y Movilidad Sostenible — mobilitat OD.
 - Institut d'Estadística de Catalunya (Idescat) — dades municipals.
-- Institut Cartogràfic i Geològic de Catalunya (ICGC) — geoinformació comarcal.
+- Institut Cartogràfic i Geològic de Catalunya (ICGC) — carreteres, infraestructura ferroviària, relleu i geoinformació territorial.
+- Renfe — serveis Rodalies/Cercanías.
+- Ferrocarrils de la Generalitat de Catalunya (FGC) — serveis GTFS.
+- CNIG/IGN — IGR-RT per alta velocitat, Metro i TRAM.
 - OpenStreetMap contributors — cartografia OSM.
