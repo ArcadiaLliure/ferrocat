@@ -1,4 +1,4 @@
-/* Ferrocat feature: fixed-geometry terrain analysis, drag-anywhere route editing and route display toggle. */
+/* Ferrocat feature: fixed-geometry terrain analysis, station-link route dragging and route display toggle. */
 
 const REAL_ROUTE_STATE_KEY='ferrocat-real-rail-route-v1';
 let realRailRoute=true;
@@ -132,7 +132,7 @@ function fixedRouteStructures(terrain,rail,distKm){
   return structures;
 }
 
-// Override the original path-finding analysis. The XY trace is now immutable:
+// Override the original path-finding analysis. The XY trace is immutable:
 // only its vertical profile/rasant is estimated from the DEM.
 analyzeTerrain=function(line){
   if(!terrainReady())return {warning:'No hi ha DEM runtime. Executa python -m pipelines.download_terrain'};
@@ -175,9 +175,19 @@ analyzeTerrain=function(line){
 };
 
 /* --------------------------------------------------------------------------
- * Google-Maps-like route dragging.
- * -------------------------------------------------------------------------- */
-function ensureEditableAlignment(line){
+ * Station-link dragging.
+ * --------------------------------------------------------------------------
+ * Semantics:
+ *   - press directly on a station -> detach that station link;
+ *   - press on the line -> detach the NEXT station along the route;
+ *   - while dragging, the neighbouring route segments pivot towards the cursor;
+ *   - releasing over another municipality snaps/reassigns that station;
+ *   - releasing without a snap restores the original route.
+ *
+ * This intentionally applies only to scenario lines. Imported operator lines
+ * do not yet carry an authoritative ordered stop sequence in the runtime data.
+ */
+function ensureScenarioAlignment(line){
   if(line?.alignment?.length>1)return line.alignment;
   const coords=(line?.stations||[])
     .map(id=>muniById[id])
@@ -187,117 +197,267 @@ function ensureEditableAlignment(line){
   return line?.alignment||[];
 }
 
-function nearestAlignmentSegmentFromScreen(line,cx,cy,maxPx=14){
-  const alignment=ensureEditableAlignment(line);
-  if(alignment.length<2)return null;
-  const p=svgPoint(cx,cy);
-  let best=null;
-  for(let i=1;i<alignment.length;i++){
-    const a=project(...alignment[i-1]),b=project(...alignment[i]);
-    const dx=b[0]-a[0],dy=b[1]-a[1],l2=dx*dx+dy*dy;
-    const t=l2?clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l2,0,1):0;
-    const x=a[0]+t*dx,y=a[1]+t*dy,d=Math.hypot(p[0]-x,p[1]-y);
-    if(!best||d<best.d)best={segment:i,t,d,mapPoint:[x,y]};
-  }
-  const mapUnitsPerPx=state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
-  return best&&best.d<=maxPx*mapUnitsPerPx?best:null;
+function projectOnSegment(p,a,b){
+  const dx=b[0]-a[0],dy=b[1]-a[1],l2=dx*dx+dy*dy;
+  const t=l2?clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l2,0,1):0;
+  const x=a[0]+t*dx,y=a[1]+t*dy;
+  return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y),segLen:Math.sqrt(l2)};
 }
 
-function snapCandidates(){
-  const rows=[];
-  const seen=new Set();
-  const add=(lon,lat,name='')=>{
-    if(!Number.isFinite(+lon)||!Number.isFinite(+lat))return;
-    const key=`${(+lon).toFixed(6)},${(+lat).toFixed(6)}`;
-    if(seen.has(key))return;
-    seen.add(key);rows.push({coord:[+lon,+lat],name});
-  };
-  for(const s of REAL_STATIONS)add(s.lon,s.lat,s.name||'');
-  for(const line of state.lines){
-    for(const id of line.stations||[]){
-      const m=muniById[id];if(m)add(m.lon,m.lat,m.nom||'');
+function alignmentMeasure(line){
+  const alignment=ensureScenarioAlignment(line);
+  const projected=alignment.map(q=>project(...q));
+  const cumulative=[0];
+  for(let i=1;i<projected.length;i++){
+    cumulative.push(cumulative.at(-1)+Math.hypot(projected[i][0]-projected[i-1][0],projected[i][1]-projected[i-1][1]));
+  }
+  return {alignment,projected,cumulative,total:cumulative.at(-1)||0};
+}
+
+function closestPointOnAlignment(measure,p){
+  let best=null;
+  for(let i=1;i<measure.projected.length;i++){
+    const q=projectOnSegment(p,measure.projected[i-1],measure.projected[i]);
+    if(!best||q.d<best.d){
+      best={...q,segment:i,along:measure.cumulative[i-1]+q.segLen*q.t};
     }
-  }
-  return rows;
-}
-
-function snapRoutePoint(cx,cy,maxPx=15){
-  const p=svgPoint(cx,cy),mapUnitsPerPx=state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
-  const limit=maxPx*mapUnitsPerPx;
-  let best=null;
-  for(const s of snapCandidates()){
-    const q=project(...s.coord),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
-    if(d<=limit&&(!best||d<best.d))best={...s,d};
   }
   return best;
 }
 
-function drawActiveRoutePoint(coord,snapped=false){
+function orderedStationAnchors(line,measure){
+  const rows=[];
+  let minAlong=-Infinity;
+  for(let stationIndex=0;stationIndex<(line.stations||[]).length;stationIndex++){
+    const m=muniById[line.stations[stationIndex]];
+    if(!m)continue;
+    const p=project(m.lon,m.lat);
+    let best=null;
+    for(let i=1;i<measure.projected.length;i++){
+      const q=projectOnSegment(p,measure.projected[i-1],measure.projected[i]);
+      const along=measure.cumulative[i-1]+q.segLen*q.t;
+      // Preserve the station order even when the polyline folds near itself.
+      if(along+1e-6<minAlong)continue;
+      if(!best||q.d<best.d)best={...q,segment:i,along};
+    }
+    if(!best){
+      best=closestPointOnAlignment(measure,p);
+    }
+    if(!best)continue;
+    minAlong=Math.max(minAlong,best.along);
+    rows.push({stationIndex,municipality:m,along:best.along,segment:best.segment,t:best.t});
+  }
+  return rows;
+}
+
+function mapUnitsPerPixel(){
+  return state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
+}
+
+function stationHitFromScreen(line,cx,cy,maxPx=11){
+  const p=svgPoint(cx,cy),limit=maxPx*mapUnitsPerPixel();
+  let best=null;
+  for(let i=0;i<(line.stations||[]).length;i++){
+    const m=muniById[line.stations[i]];
+    if(!m)continue;
+    const q=project(m.lon,m.lat),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
+    if(d<=limit&&(!best||d<best.d))best={stationIndex:i,municipality:m,d};
+  }
+  return best;
+}
+
+function lineHitFromScreen(line,cx,cy,maxPx=12){
+  const measure=alignmentMeasure(line);
+  if(measure.alignment.length<2)return null;
+  const p=svgPoint(cx,cy),hit=closestPointOnAlignment(measure,p);
+  if(!hit||hit.d>maxPx*mapUnitsPerPixel())return null;
+  return {measure,hit};
+}
+
+function nextStationForLineHit(line,measure,along){
+  const anchors=orderedStationAnchors(line,measure);
+  if(!anchors.length)return null;
+  const eps=2*mapUnitsPerPixel();
+  for(const a of anchors){
+    if(a.along>along+eps)return a.stationIndex;
+  }
+  return anchors.at(-1).stationIndex;
+}
+
+function alignmentAnchorIndices(line,measure){
+  const anchors=orderedStationAnchors(line,measure);
+  return anchors.map(a=>{
+    const before=Math.max(0,a.segment-1),after=Math.min(measure.alignment.length-1,a.segment);
+    const station=project(a.municipality.lon,a.municipality.lat);
+    const pb=measure.projected[before],pa=measure.projected[after];
+    const db=Math.hypot(station[0]-pb[0],station[1]-pb[1]);
+    const da=Math.hypot(station[0]-pa[0],station[1]-pa[1]);
+    return {...a,vertexIndex:db<=da?before:after};
+  });
+}
+
+function buildPivotAlignment(drag,coord){
+  const base=drag.baseAlignment;
+  const prev=drag.prevVertexIndex;
+  const next=drag.nextVertexIndex;
+  const out=[];
+
+  if(prev!==null){
+    for(let i=0;i<=prev;i++)out.push([+base[i][0],+base[i][1]]);
+  }
+  out.push([+coord[0],+coord[1]]);
+  if(next!==null){
+    for(let i=next;i<base.length;i++)out.push([+base[i][0],+base[i][1]]);
+  }
+
+  // Endpoint station: retain the untouched side of the original geometry.
+  if(prev===null&&next===null)return [[+coord[0],+coord[1]]];
+  return out;
+}
+
+function municipalitySnap(cx,cy,maxPx=17,excludeId=null){
+  const p=svgPoint(cx,cy),limit=maxPx*mapUnitsPerPixel();
+  let best=null;
+  for(const m of MUNICIPIS){
+    if(String(m.id)===String(excludeId))continue;
+    const q=[m.x,m.y],d=Math.hypot(p[0]-q[0],p[1]-q[1]);
+    if(d<=limit&&(!best||d<best.d))best={municipality:m,coord:[+m.lon,+m.lat],d};
+  }
+  return best;
+}
+
+function drawStationDragHandle(coord,snapped=false){
   const layer=byId('capa-linies');
   if(!layer||!coord)return;
-  const old=layer.querySelector('#route-drag-handle');if(old)old.remove();
+  const old=layer.querySelector('#station-link-drag-handle');if(old)old.remove();
   const [x,y]=project(...coord);
-  const r=5.2*state.vb.w/Math.max(300,svg.getBoundingClientRect().width);
+  const r=6*mapUnitsPerPixel();
   const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');
-  circle.setAttribute('id','route-drag-handle');circle.setAttribute('cx',x);circle.setAttribute('cy',y);circle.setAttribute('r',r);
-  circle.setAttribute('fill',snapped?'#ffd166':'#ffffff');circle.setAttribute('stroke','#ff6b35');circle.setAttribute('stroke-width',Math.max(.7,r*.35));
-  circle.setAttribute('vector-effect','non-scaling-stroke');circle.style.pointerEvents='none';
+  circle.setAttribute('id','station-link-drag-handle');
+  circle.setAttribute('cx',x);circle.setAttribute('cy',y);circle.setAttribute('r',r);
+  circle.setAttribute('fill',snapped?'#ffd166':'#ffffff');
+  circle.setAttribute('stroke','#ff6b35');
+  circle.setAttribute('stroke-width',Math.max(.8,r*.32));
+  circle.setAttribute('vector-effect','non-scaling-stroke');
+  circle.style.pointerEvents='none';
   layer.appendChild(circle);
 }
 
-let freeRouteDrag=false;
+function clearStationDragHandle(){
+  const h=byId('capa-linies')?.querySelector('#station-link-drag-handle');if(h)h.remove();
+}
 
-// Clicking any point of the active route inserts a control point exactly on
-// that segment (unless the click is already very close to an existing vertex).
-svg.addEventListener('pointerdown',e=>{
-  if(state.tool!=='trace'||alignmentDrag||e.target?.dataset?.alignIndex!==undefined)return;
-  const line=activeLine();
-  if(!line)return;
-  const hit=nearestAlignmentSegmentFromScreen(line,e.clientX,e.clientY);
-  if(!hit)return;
-  const alignment=ensureEditableAlignment(line);
-  const p=svgPoint(e.clientX,e.clientY);
-  const prev=project(...alignment[hit.segment-1]),next=project(...alignment[hit.segment]);
-  const mapUnitsPerPx=state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
-  const vertexRadius=5*mapUnitsPerPx;
-  let index;
-  if(Math.hypot(p[0]-prev[0],p[1]-prev[1])<=vertexRadius)index=hit.segment-1;
-  else if(Math.hypot(p[0]-next[0],p[1]-next[1])<=vertexRadius)index=hit.segment;
-  else{
-    index=hit.segment;
-    alignment.splice(index,0,unproject(hit.mapPoint[0],hit.mapPoint[1]));
-  }
+let stationLinkDrag=null;
+
+function beginStationLinkDrag(line,stationIndex,e,origin){
+  if(stationIndex<0||stationIndex>=line.stations.length)return false;
+  const measure=alignmentMeasure(line);
+  const anchors=alignmentAnchorIndices(line,measure);
+  const pos=anchors.findIndex(a=>a.stationIndex===stationIndex);
+  const anchor=pos>=0?anchors[pos]:null;
+  if(!anchor)return false;
+
+  const prevAnchor=pos>0?anchors[pos-1]:null;
+  const nextAnchor=pos<anchors.length-1?anchors[pos+1]:null;
+  const originalId=line.stations[stationIndex];
+  const originalM=muniById[originalId];
+  if(!originalM)return false;
+
+  stationLinkDrag={
+    lineId:line.id,
+    stationIndex,
+    originalStationId:String(originalId),
+    baseAlignment:measure.alignment.map(q=>[+q[0],+q[1]]),
+    baseStations:[...line.stations],
+    prevVertexIndex:prevAnchor?prevAnchor.vertexIndex:null,
+    nextVertexIndex:nextAnchor?nextAnchor.vertexIndex:null,
+    origin,
+    snapped:null,
+    moved:false
+  };
+
   line.analysis=null;
-  alignmentDrag={lineId:line.id,index};
-  freeRouteDrag=true;
-  dragMoved=false;
+  drawStationDragHandle([+originalM.lon,+originalM.lat],false);
   try{svg.setPointerCapture(e.pointerId)}catch{}
-  drawActiveRoutePoint(alignment[index],false);
   e.preventDefault();
   e.stopImmediatePropagation();
+  return true;
+}
+
+// Capture phase wins over the legacy point-handle drag. Direct station presses
+// have priority. Otherwise a press on the route detaches the next station.
+svg.addEventListener('pointerdown',e=>{
+  if(state.tool!=='trace'||stationLinkDrag)return;
+  const line=activeLine();
+  if(!line||line.sourceServiceId||(line.stations||[]).length<2)return;
+
+  const stationHit=stationHitFromScreen(line,e.clientX,e.clientY);
+  if(stationHit){
+    beginStationLinkDrag(line,stationHit.stationIndex,e,'station');
+    return;
+  }
+
+  const lineHit=lineHitFromScreen(line,e.clientX,e.clientY);
+  if(!lineHit)return;
+  const stationIndex=nextStationForLineHit(line,lineHit.measure,lineHit.hit.along);
+  if(stationIndex===null)return;
+  beginStationLinkDrag(line,stationIndex,e,'line');
 },{capture:true});
 
-// All alignment drags, including old visible handles, get magnetic station
-// snapping. Capture phase prevents the legacy pointermove from overwriting the
-// snapped coordinate with the raw cursor position.
 svg.addEventListener('pointermove',e=>{
-  if(!alignmentDrag||state.tool!=='trace')return;
-  const line=state.lines.find(x=>x.id===alignmentDrag.lineId);
-  if(!line?.alignment?.[alignmentDrag.index])return;
-  const snapped=snapRoutePoint(e.clientX,e.clientY);
-  const coord=snapped?.coord||unproject(...svgPoint(e.clientX,e.clientY));
-  line.alignment[alignmentDrag.index]=[+coord[0],+coord[1]];
+  if(!stationLinkDrag)return;
+  const line=state.lines.find(x=>x.id===stationLinkDrag.lineId);
+  if(!line)return;
+
+  const snap=municipalitySnap(e.clientX,e.clientY,17,stationLinkDrag.originalStationId);
+  const coord=snap?.coord||unproject(...svgPoint(e.clientX,e.clientY));
+  line.alignment=buildPivotAlignment(stationLinkDrag,coord);
   line.analysis=null;
-  dragMoved=true;
+  stationLinkDrag.snapped=snap;
+  stationLinkDrag.moved=true;
+
   renderScenario();
   renderLines();
   renderSummary();
-  drawActiveRoutePoint(line.alignment[alignmentDrag.index],!!snapped);
+  drawStationDragHandle(coord,!!snap);
   e.preventDefault();
   e.stopImmediatePropagation();
 },{capture:true});
 
-svg.addEventListener('pointerup',()=>{
-  freeRouteDrag=false;
-  const h=byId('capa-linies')?.querySelector('#route-drag-handle');if(h)h.remove();
+function finishStationLinkDrag(){
+  if(!stationLinkDrag)return;
+  const drag=stationLinkDrag;
+  const line=state.lines.find(x=>x.id===drag.lineId);
+  if(line){
+    if(drag.moved&&drag.snapped){
+      const target=drag.snapped.municipality;
+      const duplicate=line.stations.some((id,i)=>i!==drag.stationIndex&&String(id)===String(target.id));
+      if(!duplicate){
+        line.stations[drag.stationIndex]=String(target.id);
+        line.alignment=buildPivotAlignment(drag,[+target.lon,+target.lat]);
+      }else{
+        line.stations=[...drag.baseStations];
+        line.alignment=drag.baseAlignment.map(q=>[...q]);
+      }
+    }else{
+      line.stations=[...drag.baseStations];
+      line.alignment=drag.baseAlignment.map(q=>[...q]);
+    }
+    line.analysis=null;
+  }
+  stationLinkDrag=null;
+  clearStationDragHandle();
+  save();
+  render();
+}
+
+svg.addEventListener('pointerup',e=>{
+  if(!stationLinkDrag)return;
+  finishStationLinkDrag();
+  e.preventDefault();
+  e.stopImmediatePropagation();
+},{capture:true});
+
+svg.addEventListener('pointercancel',()=>{
+  if(stationLinkDrag)finishStationLinkDrag();
 },{capture:true});
