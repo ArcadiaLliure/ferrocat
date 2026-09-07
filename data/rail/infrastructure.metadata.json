@@ -1,0 +1,19 @@
+{
+  "source": "ICGC Referencial Topogràfic Territorial (RTT)",
+  "source_url": "https://maps.icgc.cat/vector03/rest/services/RTT/Referencial_Topogr%C3%A0fic_Territorial/MapServer/25",
+  "license": "CC BY 4.0",
+  "attribution": "Institut Cartogràfic i Geològic de Catalunya (ICGC)",
+  "generated_at": "2026-09-07T00:20:45Z",
+  "rail_features": 654,
+  "output_crs": "EPSG:4326",
+  "tipus": [
+    "ave",
+    "cre",
+    "fer",
+    "fun",
+    "fvc",
+    "met",
+    "prj",
+    "tra"
+  ]
+}

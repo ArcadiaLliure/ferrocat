@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-09-07T00:23:21Z",
+  "items": [
+    {
+      "id": "icgc",
+      "label": "ICGC · carreteres, infraestructura ferroviària i relleu",
+      "short": "ICGC · CC BY 4.0",
+      "text": "Carreteres i infraestructura ferroviària derivades del Referencial Topogràfic Territorial, i relleu derivat del Model d’Elevacions del Terreny de l’Institut Cartogràfic i Geològic de Catalunya (ICGC), sota CC BY 4.0.",
+      "url": "https://www.icgc.cat/ca/LICGC/Informacio-publica/Transparencia/Reutilitzacio-de-la-informacio",
+      "license": "CC BY 4.0"
+    },
+    {
+      "id": "renfe",
+      "label": "Renfe",
+      "short": "Renfe · CC BY 4.0",
+      "text": "Dades de serveis Rodalies/Cercanías de Renfe Operadora, publicades a Renfe Data sota Creative Commons Attribution 4.0.",
+      "url": "https://data.renfe.com/dataset?license_id=CC-BY-4.0&res_format=GTFS",
+      "license": "CC BY 4.0"
+    },
+    {
+      "id": "fgc",
+      "label": "FGC",
+      "short": "Dades Obertes FGC",
+      "text": "GTFS publicat al portal Dades Obertes de Ferrocarrils de la Generalitat de Catalunya (FGC).",
+      "url": "https://dadesobertes.fgc.cat/explore/dataset/gtfs_zip/",
+      "license": "Dades Obertes FGC; comprovar el camp de llicència vigent del dataset abans de redistribuir el ZIP original."
+    },
+    {
+      "id": "cnig",
+      "label": "IGR-RT CNIG/IGN",
+      "short": "IGR-RT 2026 · CC BY 4.0",
+      "text": "Obra derivada de IGR-RT 2026 CC-BY 4.0 scne.es. Utilitzat per a alta velocitat, metro i tramvia físics.",
+      "url": "https://centrodedescargas.cnig.es/CentroDescargas/buscar.do?filtro.codFamilia=REDTR",
+      "license": "Llicència compatible amb CC BY 4.0"
+    }
+  ],
+  "osm": {
+    "short": "© OpenStreetMap contributors · ODbL",
+    "url": "https://www.openstreetmap.org/copyright"
+  }
+}

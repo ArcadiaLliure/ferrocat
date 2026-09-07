@@ -15,6 +15,3 @@ venv/
 *.key
 *.p12
 *.pfx
-
-data/
-static/

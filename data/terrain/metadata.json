@@ -1,0 +1,11 @@
+{
+  "source": "ICGC Model d'Elevacions del Terreny (WCS icc:met)",
+  "source_url": "https://geoserveis.icgc.cat/icc_mdt/wcs/service",
+  "license": "CC BY 4.0",
+  "attribution": "Institut Cartogràfic i Geològic de Catalunya (ICGC)",
+  "generated_at": "2026-09-07T00:23:20Z",
+  "runtime_resolution_m": 100.0,
+  "coarse_resolution_m": 500.0,
+  "output_crs": "EPSG:25831",
+  "tile_count": 169
+}
