@@ -20,6 +20,7 @@ COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
 ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
+PROFILE_LINKING_JS = FRONTEND / "profile_linking.js"
 
 OD_PARQUET = DATA / "od_catalunya.parquet"
 REL_PARQUET = DATA / "municipi_ine_to_mitma.parquet"
@@ -258,6 +259,7 @@ template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
 route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
+profile_linking_js = PROFILE_LINKING_JS.read_text(encoding="utf-8")
 
 js = f"""export default function(component) {{
   const {{ parentElement, data }} = component;
@@ -282,6 +284,8 @@ js = f"""export default function(component) {{
 {client_js}
 
 {route_editing_js}
+
+{profile_linking_js}
 }}"""
 
 rail_app = st.components.v2.component(
