@@ -1,4 +1,4 @@
-/* Ferrocat feature: fixed-geometry terrain analysis, direct route dragging and route display toggle. */
+/* Ferrocat feature: fixed-geometry terrain analysis, route dragging and route display toggle. */
 
 const REAL_ROUTE_STATE_KEY='ferrocat-real-rail-route-v1';
 let realRailRoute=true;
@@ -146,17 +146,15 @@ analyzeTerrain=function(line){
 };
 
 /* --------------------------------------------------------------------------
- * Gesture arbitration: active route vs map pan
+ * Gesture arbitration: route edit vs map pan
  * --------------------------------------------------------------------------
- * Exact UX rule:
- *   IF pointerdown starts on the ACTIVE line, or on a station already selected
- *   in that active line -> edit the line.
- *   ELSE -> do nothing here; the legacy map-pan handler receives the gesture.
+ * Single rule:
+ *   IF primary pointerdown is on ANY scenario line, or on a municipality that
+ *   is already a station of ANY scenario line -> route edit owns the gesture.
+ *   ELSE -> this extension does nothing and the legacy map-pan owns it.
  *
- * The listener lives on parentElement in capture phase, i.e. one level ABOVE
- * the SVG. Therefore a route gesture is consumed before #mapa can initialise
- * its pan state. This is intentional and removes the previous race between the
- * route editor and the map drag handler.
+ * This handler is capture-phase on an ancestor of #mapa, so a successful hit
+ * prevents the legacy #mapa pointerdown from ever initialising map panning.
  */
 function editableAlignment(line){
   if(Array.isArray(line?.alignment)&&line.alignment.length>1)return line.alignment;
@@ -179,7 +177,7 @@ function routeProjectOnSegment(p,a,b){
   return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y)};
 }
 
-function routeHit(line,cx,cy,maxPx=13){
+function routeHit(line,cx,cy,maxPx=14){
   const alignment=editableAlignment(line);
   if(alignment.length<2)return null;
   const points=alignment.map(q=>project(...q));
@@ -192,14 +190,32 @@ function routeHit(line,cx,cy,maxPx=13){
   return best&&best.d<=maxPx*routeMapUnitsPerPixel()?best:null;
 }
 
-function selectedStationHit(line,cx,cy,maxPx=15){
+function bestScenarioLineHit(cx,cy){
+  let best=null;
+  const active=state.activeId;
+  for(const line of state.lines){
+    const hit=routeHit(line,cx,cy);
+    if(!hit)continue;
+    const activePenalty=line.id===active?-0.000001:0;
+    const score=hit.d+activePenalty;
+    if(!best||score<best.score)best={line,hit,score};
+  }
+  return best;
+}
+
+function bestSelectedStationHit(cx,cy,maxPx=16){
   const p=svgPoint(cx,cy),limit=maxPx*routeMapUnitsPerPixel();
   let best=null;
-  for(const id of (line?.stations||[])){
-    const m=muniById[id];
-    if(!m)continue;
-    const q=project(m.lon,m.lat),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
-    if(d<=limit&&(!best||d<best.d))best={m,d};
+  for(const line of state.lines){
+    for(let stationIndex=0;stationIndex<(line.stations||[]).length;stationIndex++){
+      const m=muniById[line.stations[stationIndex]];
+      if(!m)continue;
+      const q=project(m.lon,m.lat),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
+      if(d>limit)continue;
+      const activePenalty=line.id===state.activeId?-0.000001:0;
+      const score=d+activePenalty;
+      if(!best||score<best.score)best={line,stationIndex,m,d,score};
+    }
   }
   return best;
 }
@@ -235,9 +251,21 @@ function nearestVertexToHit(line,hit,maxPx=5){
   return da<=db?aIndex:bIndex;
 }
 
+function routeSnapMunicipality(cx,cy,maxPx=18){
+  const p=svgPoint(cx,cy),limit=maxPx*routeMapUnitsPerPixel();
+  let best=null;
+  for(const m of MUNICIPIS){
+    const d=Math.hypot(p[0]-m.x,p[1]-m.y);
+    if(d<=limit&&(!best||d<best.d))best={m,d,coord:[+m.lon,+m.lat]};
+  }
+  return best;
+}
+
 let directRouteDrag=null;
 
 function consumeDirectRouteGesture(e){
+  // Hard reset of legacy pan state. If this gesture belongs to the route,
+  // map panning is not allowed to remain armed from any previous event.
   dragging=false;
   dragStart=null;
   vbStart=null;
@@ -247,11 +275,14 @@ function consumeDirectRouteGesture(e){
   e.stopImmediatePropagation();
 }
 
-function beginDirectRouteDrag(line,hit,e,origin){
+function beginDirectRouteDrag(line,hit,e,origin,stationIndex=null){
   const base=editableAlignment(line).map(q=>[+q[0],+q[1]]);
   if(base.length<2)return false;
 
+  // Clicking a route is also an unambiguous selection of that route.
+  state.activeId=line.id;
   line.alignment=base.map(q=>[...q]);
+
   let index=nearestVertexToHit(line,hit);
   let inserted=false;
   if(index===null){
@@ -266,14 +297,18 @@ function beginDirectRouteDrag(line,hit,e,origin){
     pointerId:e.pointerId,
     index,
     inserted,
+    stationIndex,
     baseAlignment:base,
+    baseStations:[...(line.stations||[])],
     startClient:[e.clientX,e.clientY],
     moved:false,
+    snapped:null,
     origin
   };
 
   line.analysis=null;
   try{svg.setPointerCapture(e.pointerId)}catch{}
+  console.debug('[Ferrocat] route drag start',{line:line.id,origin,stationIndex});
   consumeDirectRouteGesture(e);
   return true;
 }
@@ -285,26 +320,24 @@ function pointerStartedInsideMap(e){
 parentElement.addEventListener('pointerdown',e=>{
   if(e.button!==0||directRouteDrag||!pointerStartedInsideMap(e))return;
 
-  const line=activeLine();
-  if(!line)return; // ELSE: map pan
-
-  // IF 1: station already selected in the active line.
-  const station=selectedStationHit(line,e.clientX,e.clientY);
+  // Priority 1: a station already used by a scenario line.
+  const station=bestSelectedStationHit(e.clientX,e.clientY);
   if(station){
-    const hit=nearestRouteHitToStation(line,station.m);
-    if(hit)beginDirectRouteDrag(line,hit,e,'selected-station');
+    const hit=nearestRouteHitToStation(station.line,station.m);
+    if(hit){
+      beginDirectRouteDrag(station.line,hit,e,'selected-station',station.stationIndex);
+      return;
+    }
+  }
+
+  // Priority 2: any scenario line itself. No activeId prerequisite.
+  const route=bestScenarioLineHit(e.clientX,e.clientY);
+  if(route){
+    beginDirectRouteDrag(route.line,route.hit,e,'line',null);
     return;
   }
 
-  // IF 2: active line itself.
-  const hit=routeHit(line,e.clientX,e.clientY);
-  if(hit){
-    beginDirectRouteDrag(line,hit,e,'line');
-    return;
-  }
-
-  // ELSE: deliberately do not preventDefault/stopPropagation.
-  // The normal map-pan code owns the gesture.
+  // ELSE: deliberately do nothing. Legacy #mapa pointerdown starts map pan.
 },{capture:true});
 
 parentElement.addEventListener('pointermove',e=>{
@@ -320,9 +353,13 @@ parentElement.addEventListener('pointermove',e=>{
   }
 
   directRouteDrag.moved=true;
+  const snap=routeSnapMunicipality(e.clientX,e.clientY);
   const mapPoint=svgPoint(e.clientX,e.clientY);
-  line.alignment[directRouteDrag.index]=unproject(mapPoint[0],mapPoint[1]);
+  const coord=snap?.coord||unproject(mapPoint[0],mapPoint[1]);
+  line.alignment[directRouteDrag.index]=coord;
   line.analysis=null;
+  directRouteDrag.snapped=snap;
+
   renderScenario();
   renderLines();
   renderSummary();
@@ -334,10 +371,13 @@ function finishDirectRouteDrag(e){
   const drag=directRouteDrag;
   const line=state.lines.find(x=>x.id===drag.lineId);
 
-  // A click without an actual drag only arbitrates intent; it must not alter
-  // the geometry by leaving behind a newly inserted control vertex.
   if(line&&!drag.moved){
+    // Pure click selects the line but must not change its geometry.
     line.alignment=drag.baseAlignment.map(q=>[...q]);
+  }else if(line&&drag.origin==='selected-station'&&drag.stationIndex!==null&&drag.snapped){
+    const targetId=String(drag.snapped.m.id);
+    const duplicate=line.stations.some((id,i)=>i!==drag.stationIndex&&String(id)===targetId);
+    if(!duplicate)line.stations[drag.stationIndex]=targetId;
   }
   if(line)line.analysis=null;
 
