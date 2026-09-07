@@ -1,4 +1,4 @@
-/* Ferrocat feature: fixed-geometry terrain analysis, station-link route dragging and route display toggle. */
+/* Ferrocat feature: fixed-geometry terrain analysis, direct route dragging and route display toggle. */
 
 const REAL_ROUTE_STATE_KEY='ferrocat-real-rail-route-v1';
 let realRailRoute=true;
@@ -146,196 +146,211 @@ analyzeTerrain=function(line){
 };
 
 /* --------------------------------------------------------------------------
- * Station-link dragging.
+ * Gesture arbitration: active route vs map pan
  * --------------------------------------------------------------------------
- * IMPORTANT: route dragging is deliberately independent from the selected
- * drawing tool. If the primary button starts directly on an active scenario
- * route/station, this handler consumes the gesture BEFORE the map-pan handler.
- * Everywhere else the normal map drag remains untouched.
+ * Exact UX rule:
+ *   IF pointerdown starts on the ACTIVE line, or on a station already selected
+ *   in that active line -> edit the line.
+ *   ELSE -> do nothing here; the legacy map-pan handler receives the gesture.
+ *
+ * The listener lives on parentElement in capture phase, i.e. one level ABOVE
+ * the SVG. Therefore a route gesture is consumed before #mapa can initialise
+ * its pan state. This is intentional and removes the previous race between the
+ * route editor and the map drag handler.
  */
-function ensureScenarioAlignment(line){
-  if(line?.alignment?.length>1)return line.alignment;
-  const coords=(line?.stations||[]).map(id=>muniById[id]).filter(Boolean).map(m=>[+m.lon,+m.lat]);
+function editableAlignment(line){
+  if(Array.isArray(line?.alignment)&&line.alignment.length>1)return line.alignment;
+  const coords=(line?.stations||[])
+    .map(id=>muniById[id])
+    .filter(Boolean)
+    .map(m=>[+m.lon,+m.lat]);
   if(coords.length>1)line.alignment=coords;
   return line?.alignment||[];
 }
 
-function projectOnSegment(p,a,b){
+function routeMapUnitsPerPixel(){
+  return state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
+}
+
+function routeProjectOnSegment(p,a,b){
   const dx=b[0]-a[0],dy=b[1]-a[1],l2=dx*dx+dy*dy;
   const t=l2?clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l2,0,1):0;
   const x=a[0]+t*dx,y=a[1]+t*dy;
-  return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y),segLen:Math.sqrt(l2)};
+  return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y)};
 }
 
-function alignmentMeasure(line){
-  const alignment=ensureScenarioAlignment(line),projected=alignment.map(q=>project(...q)),cumulative=[0];
-  for(let i=1;i<projected.length;i++)cumulative.push(cumulative.at(-1)+Math.hypot(projected[i][0]-projected[i-1][0],projected[i][1]-projected[i-1][1]));
-  return {alignment,projected,cumulative,total:cumulative.at(-1)||0};
-}
-
-function closestPointOnAlignment(measure,p){
+function routeHit(line,cx,cy,maxPx=13){
+  const alignment=editableAlignment(line);
+  if(alignment.length<2)return null;
+  const points=alignment.map(q=>project(...q));
+  const p=svgPoint(cx,cy);
   let best=null;
-  for(let i=1;i<measure.projected.length;i++){
-    const q=projectOnSegment(p,measure.projected[i-1],measure.projected[i]);
-    if(!best||q.d<best.d)best={...q,segment:i,along:measure.cumulative[i-1]+q.segLen*q.t};
+  for(let i=1;i<points.length;i++){
+    const q=routeProjectOnSegment(p,points[i-1],points[i]);
+    if(!best||q.d<best.d)best={...q,segment:i};
   }
-  return best;
+  return best&&best.d<=maxPx*routeMapUnitsPerPixel()?best:null;
 }
 
-function orderedStationAnchors(line,measure){
-  const rows=[];let minAlong=-Infinity;
-  for(let stationIndex=0;stationIndex<(line.stations||[]).length;stationIndex++){
-    const m=muniById[line.stations[stationIndex]];if(!m)continue;
-    const p=project(m.lon,m.lat);let best=null;
-    for(let i=1;i<measure.projected.length;i++){
-      const q=projectOnSegment(p,measure.projected[i-1],measure.projected[i]);
-      const along=measure.cumulative[i-1]+q.segLen*q.t;
-      if(along+1e-6<minAlong)continue;
-      if(!best||q.d<best.d)best={...q,segment:i,along};
-    }
-    if(!best)best=closestPointOnAlignment(measure,p);
-    if(!best)continue;
-    minAlong=Math.max(minAlong,best.along);
-    rows.push({stationIndex,municipality:m,along:best.along,segment:best.segment,t:best.t});
-  }
-  return rows;
-}
-
-function mapUnitsPerPixel(){return state.vb.w/Math.max(1,svg.getBoundingClientRect().width);}
-
-function stationHitFromScreen(line,cx,cy,maxPx=14){
-  const p=svgPoint(cx,cy),limit=maxPx*mapUnitsPerPixel();let best=null;
-  for(let i=0;i<(line.stations||[]).length;i++){
-    const m=muniById[line.stations[i]];if(!m)continue;
+function selectedStationHit(line,cx,cy,maxPx=15){
+  const p=svgPoint(cx,cy),limit=maxPx*routeMapUnitsPerPixel();
+  let best=null;
+  for(const id of (line?.stations||[])){
+    const m=muniById[id];
+    if(!m)continue;
     const q=project(m.lon,m.lat),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
-    if(d<=limit&&(!best||d<best.d))best={stationIndex:i,municipality:m,d};
+    if(d<=limit&&(!best||d<best.d))best={m,d};
   }
   return best;
 }
 
-function lineHitFromScreen(line,cx,cy,maxPx=12){
-  const measure=alignmentMeasure(line);if(measure.alignment.length<2)return null;
-  const hit=closestPointOnAlignment(measure,svgPoint(cx,cy));
-  return hit&&hit.d<=maxPx*mapUnitsPerPixel()?{measure,hit}:null;
-}
-
-function nextStationForLineHit(line,measure,along){
-  const anchors=orderedStationAnchors(line,measure);if(!anchors.length)return null;
-  const eps=2*mapUnitsPerPixel();
-  for(const a of anchors)if(a.along>along+eps)return a.stationIndex;
-  return anchors.at(-1).stationIndex;
-}
-
-function alignmentAnchorIndices(line,measure){
-  return orderedStationAnchors(line,measure).map(a=>{
-    const before=Math.max(0,a.segment-1),after=Math.min(measure.alignment.length-1,a.segment);
-    const station=project(a.municipality.lon,a.municipality.lat),pb=measure.projected[before],pa=measure.projected[after];
-    return {...a,vertexIndex:Math.hypot(station[0]-pb[0],station[1]-pb[1])<=Math.hypot(station[0]-pa[0],station[1]-pa[1])?before:after};
-  });
-}
-
-function buildPivotAlignment(drag,coord){
-  const base=drag.baseAlignment,prev=drag.prevVertexIndex,next=drag.nextVertexIndex,out=[];
-  if(prev!==null)for(let i=0;i<=prev;i++)out.push([+base[i][0],+base[i][1]]);
-  out.push([+coord[0],+coord[1]]);
-  if(next!==null)for(let i=next;i<base.length;i++)out.push([+base[i][0],+base[i][1]]);
-  if(prev===null&&next===null)return [[+coord[0],+coord[1]]];
-  return out;
-}
-
-function municipalitySnap(cx,cy,maxPx=17,excludeId=null){
-  const p=svgPoint(cx,cy),limit=maxPx*mapUnitsPerPixel();let best=null;
-  for(const m of MUNICIPIS){
-    if(String(m.id)===String(excludeId))continue;
-    const d=Math.hypot(p[0]-m.x,p[1]-m.y);
-    if(d<=limit&&(!best||d<best.d))best={municipality:m,coord:[+m.lon,+m.lat],d};
+function nearestRouteHitToStation(line,station){
+  const alignment=editableAlignment(line);
+  if(alignment.length<2)return null;
+  const points=alignment.map(q=>project(...q));
+  const p=project(station.lon,station.lat);
+  let best=null;
+  for(let i=1;i<points.length;i++){
+    const q=routeProjectOnSegment(p,points[i-1],points[i]);
+    if(!best||q.d<best.d)best={...q,segment:i};
   }
   return best;
 }
 
-function drawStationDragHandle(coord,snapped=false){
-  const layer=byId('capa-linies');if(!layer||!coord)return;
-  const old=layer.querySelector('#station-link-drag-handle');if(old)old.remove();
-  const [x,y]=project(...coord),r=6*mapUnitsPerPixel();
-  const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');
-  circle.setAttribute('id','station-link-drag-handle');circle.setAttribute('cx',x);circle.setAttribute('cy',y);circle.setAttribute('r',r);
-  circle.setAttribute('fill',snapped?'#ffd166':'#ffffff');circle.setAttribute('stroke','#ff6b35');circle.setAttribute('stroke-width',Math.max(.8,r*.32));
-  circle.setAttribute('vector-effect','non-scaling-stroke');circle.style.pointerEvents='none';layer.appendChild(circle);
+function routeHitLonLat(line,hit){
+  const a=line.alignment[hit.segment-1],b=line.alignment[hit.segment];
+  return [
+    +a[0]+(+b[0]-+a[0])*hit.t,
+    +a[1]+(+b[1]-+a[1])*hit.t
+  ];
 }
 
-function clearStationDragHandle(){const h=byId('capa-linies')?.querySelector('#station-link-drag-handle');if(h)h.remove();}
+function nearestVertexToHit(line,hit,maxPx=5){
+  const p=[hit.x,hit.y],limit=maxPx*routeMapUnitsPerPixel();
+  const aIndex=hit.segment-1,bIndex=hit.segment;
+  const ap=project(...line.alignment[aIndex]),bp=project(...line.alignment[bIndex]);
+  const da=Math.hypot(p[0]-ap[0],p[1]-ap[1]);
+  const db=Math.hypot(p[0]-bp[0],p[1]-bp[1]);
+  if(Math.min(da,db)>limit)return null;
+  return da<=db?aIndex:bIndex;
+}
 
-let stationLinkDrag=null;
+let directRouteDrag=null;
 
-function consumeRouteGesture(e){
-  // Cancel any legacy map pan that might already have been primed.
-  dragging=false;dragStart=null;vbStart=null;
-  // Keep the legacy click handler from treating the release as a map click.
+function consumeDirectRouteGesture(e){
+  dragging=false;
+  dragStart=null;
+  vbStart=null;
   dragMoved=true;
   e.preventDefault();
+  e.stopPropagation();
   e.stopImmediatePropagation();
 }
 
-function beginStationLinkDrag(line,stationIndex,e,origin){
-  if(stationIndex<0||stationIndex>=line.stations.length)return false;
-  const measure=alignmentMeasure(line),anchors=alignmentAnchorIndices(line,measure);
-  const pos=anchors.findIndex(a=>a.stationIndex===stationIndex),anchor=pos>=0?anchors[pos]:null;
-  if(!anchor)return false;
-  const prevAnchor=pos>0?anchors[pos-1]:null,nextAnchor=pos<anchors.length-1?anchors[pos+1]:null;
-  const originalId=line.stations[stationIndex],originalM=muniById[originalId];if(!originalM)return false;
+function beginDirectRouteDrag(line,hit,e,origin){
+  const base=editableAlignment(line).map(q=>[+q[0],+q[1]]);
+  if(base.length<2)return false;
 
-  stationLinkDrag={lineId:line.id,stationIndex,originalStationId:String(originalId),baseAlignment:measure.alignment.map(q=>[+q[0],+q[1]]),baseStations:[...line.stations],prevVertexIndex:prevAnchor?prevAnchor.vertexIndex:null,nextVertexIndex:nextAnchor?nextAnchor.vertexIndex:null,origin,snapped:null,moved:false,pointerId:e.pointerId};
+  line.alignment=base.map(q=>[...q]);
+  let index=nearestVertexToHit(line,hit);
+  let inserted=false;
+  if(index===null){
+    const ll=routeHitLonLat(line,hit);
+    index=hit.segment;
+    line.alignment.splice(index,0,ll);
+    inserted=true;
+  }
+
+  directRouteDrag={
+    lineId:line.id,
+    pointerId:e.pointerId,
+    index,
+    inserted,
+    baseAlignment:base,
+    startClient:[e.clientX,e.clientY],
+    moved:false,
+    origin
+  };
+
   line.analysis=null;
-  drawStationDragHandle([+originalM.lon,+originalM.lat],false);
   try{svg.setPointerCapture(e.pointerId)}catch{}
-  consumeRouteGesture(e);
+  consumeDirectRouteGesture(e);
   return true;
 }
 
-// This MUST NOT depend on state.tool. Route manipulation is a direct map
-// gesture, available in both "Estacions" and "Traça" modes.
-svg.addEventListener('pointerdown',e=>{
-  if(e.button!==0||stationLinkDrag)return;
-  const line=activeLine();
-  if(!line||line.sourceServiceId||(line.stations||[]).length<2)return;
-
-  const stationHit=stationHitFromScreen(line,e.clientX,e.clientY);
-  if(stationHit){beginStationLinkDrag(line,stationHit.stationIndex,e,'station');return;}
-
-  const lineHit=lineHitFromScreen(line,e.clientX,e.clientY);
-  if(!lineHit)return;
-  const stationIndex=nextStationForLineHit(line,lineHit.measure,lineHit.hit.along);
-  if(stationIndex!==null)beginStationLinkDrag(line,stationIndex,e,'line');
-},{capture:true});
-
-svg.addEventListener('pointermove',e=>{
-  if(!stationLinkDrag)return;
-  const line=state.lines.find(x=>x.id===stationLinkDrag.lineId);if(!line)return;
-  const snap=municipalitySnap(e.clientX,e.clientY,17,stationLinkDrag.originalStationId);
-  const coord=snap?.coord||unproject(...svgPoint(e.clientX,e.clientY));
-  line.alignment=buildPivotAlignment(stationLinkDrag,coord);line.analysis=null;
-  stationLinkDrag.snapped=snap;stationLinkDrag.moved=true;
-  renderScenario();renderLines();renderSummary();drawStationDragHandle(coord,!!snap);
-  consumeRouteGesture(e);
-},{capture:true});
-
-function finishStationLinkDrag(e=null){
-  if(!stationLinkDrag)return;
-  const drag=stationLinkDrag,line=state.lines.find(x=>x.id===drag.lineId);
-  if(line){
-    if(drag.moved&&drag.snapped){
-      const target=drag.snapped.municipality;
-      const duplicate=line.stations.some((id,i)=>i!==drag.stationIndex&&String(id)===String(target.id));
-      if(!duplicate){line.stations[drag.stationIndex]=String(target.id);line.alignment=buildPivotAlignment(drag,[+target.lon,+target.lat]);}
-      else{line.stations=[...drag.baseStations];line.alignment=drag.baseAlignment.map(q=>[...q]);}
-    }else{
-      line.stations=[...drag.baseStations];line.alignment=drag.baseAlignment.map(q=>[...q]);
-    }
-    line.analysis=null;
-  }
-  stationLinkDrag=null;clearStationDragHandle();save();render();
-  if(e)consumeRouteGesture(e);
+function pointerStartedInsideMap(e){
+  return e.target===svg||svg.contains(e.target);
 }
 
-svg.addEventListener('pointerup',e=>{if(stationLinkDrag)finishStationLinkDrag(e);},{capture:true});
-svg.addEventListener('pointercancel',e=>{if(stationLinkDrag)finishStationLinkDrag(e);},{capture:true});
+parentElement.addEventListener('pointerdown',e=>{
+  if(e.button!==0||directRouteDrag||!pointerStartedInsideMap(e))return;
+
+  const line=activeLine();
+  if(!line)return; // ELSE: map pan
+
+  // IF 1: station already selected in the active line.
+  const station=selectedStationHit(line,e.clientX,e.clientY);
+  if(station){
+    const hit=nearestRouteHitToStation(line,station.m);
+    if(hit)beginDirectRouteDrag(line,hit,e,'selected-station');
+    return;
+  }
+
+  // IF 2: active line itself.
+  const hit=routeHit(line,e.clientX,e.clientY);
+  if(hit){
+    beginDirectRouteDrag(line,hit,e,'line');
+    return;
+  }
+
+  // ELSE: deliberately do not preventDefault/stopPropagation.
+  // The normal map-pan code owns the gesture.
+},{capture:true});
+
+parentElement.addEventListener('pointermove',e=>{
+  if(!directRouteDrag||e.pointerId!==directRouteDrag.pointerId)return;
+  const line=state.lines.find(x=>x.id===directRouteDrag.lineId);
+  if(!line)return;
+
+  const dx=e.clientX-directRouteDrag.startClient[0];
+  const dy=e.clientY-directRouteDrag.startClient[1];
+  if(!directRouteDrag.moved&&Math.hypot(dx,dy)<2){
+    consumeDirectRouteGesture(e);
+    return;
+  }
+
+  directRouteDrag.moved=true;
+  const mapPoint=svgPoint(e.clientX,e.clientY);
+  line.alignment[directRouteDrag.index]=unproject(mapPoint[0],mapPoint[1]);
+  line.analysis=null;
+  renderScenario();
+  renderLines();
+  renderSummary();
+  consumeDirectRouteGesture(e);
+},{capture:true});
+
+function finishDirectRouteDrag(e){
+  if(!directRouteDrag)return;
+  const drag=directRouteDrag;
+  const line=state.lines.find(x=>x.id===drag.lineId);
+
+  // A click without an actual drag only arbitrates intent; it must not alter
+  // the geometry by leaving behind a newly inserted control vertex.
+  if(line&&!drag.moved){
+    line.alignment=drag.baseAlignment.map(q=>[...q]);
+  }
+  if(line)line.analysis=null;
+
+  directRouteDrag=null;
+  save();
+  render();
+  consumeDirectRouteGesture(e);
+}
+
+parentElement.addEventListener('pointerup',e=>{
+  if(directRouteDrag&&e.pointerId===directRouteDrag.pointerId)finishDirectRouteDrag(e);
+},{capture:true});
+
+parentElement.addEventListener('pointercancel',e=>{
+  if(directRouteDrag&&e.pointerId===directRouteDrag.pointerId)finishDirectRouteDrag(e);
+},{capture:true});
