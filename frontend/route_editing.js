@@ -1,4 +1,4 @@
-/* Ferrocat feature: fixed-geometry terrain analysis, route dragging and route display toggle. */
+/* Ferrocat feature: fixed-geometry terrain analysis, reliable route dragging and route display toggle. */
 
 const REAL_ROUTE_STATE_KEY='ferrocat-real-rail-route-v1';
 let realRailRoute=true;
@@ -6,10 +6,7 @@ try{realRailRoute=sessionStorage.getItem(REAL_ROUTE_STATE_KEY)!=='false'}catch{}
 
 /* --------------------------------------------------------------------------
  * Display geometry
- * --------------------------------------------------------------------------
- * User-created scenario lines can be displayed stop-to-stop. Imported services
- * stay on their real geometry until the runtime exposes authoritative stop order.
- */
+ * -------------------------------------------------------------------------- */
 function routeStationCandidates(line){
   if(!line||line.sourceServiceId)return [];
   return (line.stations||[])
@@ -57,7 +54,7 @@ function installRealRouteToggle(){
 installRealRouteToggle();
 
 /* --------------------------------------------------------------------------
- * Topography: analyse exactly the XY route drawn by the user.
+ * Topography: analyse exactly the XY route chosen by the user.
  * -------------------------------------------------------------------------- */
 function fixedRouteSamples(coords,stepKm=.35){
   if(!Array.isArray(coords)||coords.length<2)return [];
@@ -67,7 +64,10 @@ function fixedRouteSamples(coords,stepKm=.35){
     const n=Math.max(1,Math.ceil(km/stepKm));
     for(let j=1;j<=n;j++){
       const t=j/n;
-      out.push([+a[0]+(+b[0]-+a[0])*t,+a[1]+(+b[1]-+a[1])*t]);
+      out.push([
+        +a[0]+(+b[0]-+a[0])*t,
+        +a[1]+(+b[1]-+a[1])*t
+      ]);
     }
   }
   return out;
@@ -111,7 +111,9 @@ function fixedRouteStructures(terrain,rail,distKm){
   for(let i=1;i<=kind.length;i++){
     if(i===kind.length||kind[i]!==kind[s]){
       const len=distKm[i-1]-distKm[s];
-      if(kind[s]!=='surface'&&len>=.25)structures.push({kind:kind[s],startKm:distKm[s],endKm:distKm[i-1],lengthKm:len});
+      if(kind[s]!=='surface'&&len>=.25){
+        structures.push({kind:kind[s],startKm:distKm[s],endKm:distKm[i-1],lengthKm:len});
+      }
       s=i;
     }
   }
@@ -135,38 +137,65 @@ analyzeTerrain=function(line){
 
   const distKm=[0];
   for(let i=1;i<coords.length;i++)distKm.push(distKm.at(-1)+havLL(coords[i-1],coords[i]));
-  const rail=fixedRailProfile(terrain,distKm),structures=fixedRouteStructures(terrain,rail,distKm);
+  const rail=fixedRailProfile(terrain,distKm);
+  const structures=fixedRouteStructures(terrain,rail,distKm);
   let maxGradient=0;
   for(let i=1;i<rail.length;i++){
     const ds=Math.max(.001,(distKm[i]-distKm[i-1])*1000);
     maxGradient=Math.max(maxGradient,Math.abs(rail[i]-rail[i-1])/ds*1000);
   }
   const hasTunnel=structures.some(x=>x.kind==='tunnel');
-  return {surfaceFeasible:!hasTunnel,usedTunnel:hasTunnel,optimizedCoords:coords,terrain,rail,distKm,structures,maxGradient,warning:null};
+  return {
+    surfaceFeasible:!hasTunnel,
+    usedTunnel:hasTunnel,
+    optimizedCoords:coords,
+    terrain,
+    rail,
+    distKm,
+    structures,
+    maxGradient,
+    warning:null
+  };
 };
 
 /* --------------------------------------------------------------------------
- * Gesture arbitration: route edit vs map pan
+ * Route-drag vs map-pan arbitration
  * --------------------------------------------------------------------------
- * Single rule:
- *   IF primary pointerdown is on ANY scenario line, or on a municipality that
- *   is already a station of ANY scenario line -> route edit owns the gesture.
- *   ELSE -> this extension does nothing and the legacy map-pan owns it.
+ * The previous implementation used svg.getBoundingClientRect() as if the SVG
+ * viewBox filled that rectangle. It does not: #mapa uses
+ * preserveAspectRatio="xMidYMid meet", so the real SVG content can be
+ * letterboxed. That made the synthetic hit-test miss the line/station while the
+ * legacy map pointerdown still armed panning.
  *
- * This handler is capture-phase on an ancestor of #mapa, so a successful hit
- * prevents the legacy #mapa pointerdown from ever initialising map panning.
- */
-function editableAlignment(line){
-  if(Array.isArray(line?.alignment)&&line.alignment.length>1)return line.alignment;
-  const coords=(line?.stations||[])
-    .map(id=>muniById[id])
-    .filter(Boolean)
-    .map(m=>[+m.lon,+m.lat]);
-  if(coords.length>1)line.alignment=coords;
-  return line?.alignment||[];
+ * All hit testing below is therefore done in the SVG's real user coordinate
+ * system through getScreenCTM().inverse(). The geometry tested is also the exact
+ * geometry currently rendered (displayedLineCoords), not always line.alignment.
+ *
+ * Ownership rule:
+ *   IF primary pointerdown hits a scenario line OR a station already belonging
+ *      to a scenario line -> route drag consumes the complete pointer sequence.
+ *   ELSE -> this extension does nothing and the existing map-pan handler owns it.
+ * -------------------------------------------------------------------------- */
+
+function routeClientPoint(cx,cy){
+  const ctm=svg.getScreenCTM();
+  if(ctm){
+    const p=svg.createSVGPoint();
+    p.x=cx;p.y=cy;
+    const q=p.matrixTransform(ctm.inverse());
+    return [q.x,q.y];
+  }
+  return svgPoint(cx,cy);
 }
 
-function routeMapUnitsPerPixel(){
+function routeUserUnitsPerPixel(){
+  const ctm=svg.getScreenCTM();
+  if(ctm){
+    const sx=Math.hypot(ctm.a,ctm.b);
+    const sy=Math.hypot(ctm.c,ctm.d);
+    const scale=(sx+sy)/2;
+    if(Number.isFinite(scale)&&scale>0)return 1/scale;
+  }
   return state.vb.w/Math.max(1,svg.getBoundingClientRect().width);
 }
 
@@ -174,37 +203,52 @@ function routeProjectOnSegment(p,a,b){
   const dx=b[0]-a[0],dy=b[1]-a[1],l2=dx*dx+dy*dy;
   const t=l2?clamp(((p[0]-a[0])*dx+(p[1]-a[1])*dy)/l2,0,1):0;
   const x=a[0]+t*dx,y=a[1]+t*dy;
-  return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y)};
+  return {t,x,y,d:Math.hypot(p[0]-x,p[1]-y),segLen:Math.sqrt(l2)};
 }
 
-function routeHit(line,cx,cy,maxPx=14){
-  const alignment=editableAlignment(line);
-  if(alignment.length<2)return null;
-  const points=alignment.map(q=>project(...q));
-  const p=svgPoint(cx,cy);
-  let best=null;
+function routeMeasure(line){
+  const coords=displayedLineCoords(line);
+  const points=(coords||[]).map(q=>project(+q[0],+q[1]));
+  const cumulative=[0];
   for(let i=1;i<points.length;i++){
-    const q=routeProjectOnSegment(p,points[i-1],points[i]);
-    if(!best||q.d<best.d)best={...q,segment:i};
+    cumulative.push(cumulative.at(-1)+Math.hypot(points[i][0]-points[i-1][0],points[i][1]-points[i-1][1]));
   }
-  return best&&best.d<=maxPx*routeMapUnitsPerPixel()?best:null;
+  return {coords,points,cumulative,total:cumulative.at(-1)||0};
 }
 
-function bestScenarioLineHit(cx,cy){
+function closestPointOnMeasuredRoute(measure,p){
   let best=null;
-  const active=state.activeId;
-  for(const line of state.lines){
-    const hit=routeHit(line,cx,cy);
-    if(!hit)continue;
-    const activePenalty=line.id===active?-0.000001:0;
-    const score=hit.d+activePenalty;
-    if(!best||score<best.score)best={line,hit,score};
+  for(let i=1;i<measure.points.length;i++){
+    const q=routeProjectOnSegment(p,measure.points[i-1],measure.points[i]);
+    if(!best||q.d<best.d){
+      best={...q,segment:i,along:measure.cumulative[i-1]+q.segLen*q.t};
+    }
   }
   return best;
 }
 
-function bestSelectedStationHit(cx,cy,maxPx=16){
-  const p=svgPoint(cx,cy),limit=maxPx*routeMapUnitsPerPixel();
+function routeHit(line,cx,cy,maxPx=15){
+  const measure=routeMeasure(line);
+  if(measure.points.length<2)return null;
+  const hit=closestPointOnMeasuredRoute(measure,routeClientPoint(cx,cy));
+  const limit=maxPx*routeUserUnitsPerPixel();
+  return hit&&hit.d<=limit?{measure,hit}:null;
+}
+
+function bestScenarioLineHit(cx,cy){
+  let best=null;
+  for(const line of state.lines){
+    const row=routeHit(line,cx,cy);
+    if(!row)continue;
+    const activeBias=line.id===state.activeId?-1e-7:0;
+    const score=row.hit.d+activeBias;
+    if(!best||score<best.score)best={line,...row,score};
+  }
+  return best;
+}
+
+function bestSelectedStationHit(cx,cy,maxPx=18){
+  const p=routeClientPoint(cx,cy),limit=maxPx*routeUserUnitsPerPixel();
   let best=null;
   for(const line of state.lines){
     for(let stationIndex=0;stationIndex<(line.stations||[]).length;stationIndex++){
@@ -212,185 +256,314 @@ function bestSelectedStationHit(cx,cy,maxPx=16){
       if(!m)continue;
       const q=project(m.lon,m.lat),d=Math.hypot(p[0]-q[0],p[1]-q[1]);
       if(d>limit)continue;
-      const activePenalty=line.id===state.activeId?-0.000001:0;
-      const score=d+activePenalty;
+      const activeBias=line.id===state.activeId?-1e-7:0;
+      const score=d+activeBias;
       if(!best||score<best.score)best={line,stationIndex,m,d,score};
     }
   }
   return best;
 }
 
-function nearestRouteHitToStation(line,station){
-  const alignment=editableAlignment(line);
-  if(alignment.length<2)return null;
-  const points=alignment.map(q=>project(...q));
-  const p=project(station.lon,station.lat);
-  let best=null;
-  for(let i=1;i<points.length;i++){
-    const q=routeProjectOnSegment(p,points[i-1],points[i]);
-    if(!best||q.d<best.d)best={...q,segment:i};
-  }
-  return best;
-}
-
-function routeHitLonLat(line,hit){
-  const a=line.alignment[hit.segment-1],b=line.alignment[hit.segment];
-  return [
-    +a[0]+(+b[0]-+a[0])*hit.t,
-    +a[1]+(+b[1]-+a[1])*hit.t
-  ];
-}
-
-function nearestVertexToHit(line,hit,maxPx=5){
-  const p=[hit.x,hit.y],limit=maxPx*routeMapUnitsPerPixel();
-  const aIndex=hit.segment-1,bIndex=hit.segment;
-  const ap=project(...line.alignment[aIndex]),bp=project(...line.alignment[bIndex]);
-  const da=Math.hypot(p[0]-ap[0],p[1]-ap[1]);
-  const db=Math.hypot(p[0]-bp[0],p[1]-bp[1]);
-  if(Math.min(da,db)>limit)return null;
-  return da<=db?aIndex:bIndex;
-}
-
-function routeSnapMunicipality(cx,cy,maxPx=18){
-  const p=svgPoint(cx,cy),limit=maxPx*routeMapUnitsPerPixel();
+function routeMunicipalitySnap(cx,cy,maxPx=20,excludeId=null){
+  const p=routeClientPoint(cx,cy),limit=maxPx*routeUserUnitsPerPixel();
   let best=null;
   for(const m of MUNICIPIS){
+    if(excludeId!==null&&String(m.id)===String(excludeId))continue;
     const d=Math.hypot(p[0]-m.x,p[1]-m.y);
     if(d<=limit&&(!best||d<best.d))best={m,d,coord:[+m.lon,+m.lat]};
   }
   return best;
 }
 
-let directRouteDrag=null;
+function alignmentForScenario(line){
+  if(Array.isArray(line.alignment)&&line.alignment.length>1){
+    return line.alignment.map(q=>[+q[0],+q[1]]);
+  }
+  return (line.stations||[])
+    .map(id=>muniById[id])
+    .filter(Boolean)
+    .map(m=>[+m.lon,+m.lat]);
+}
 
-function consumeDirectRouteGesture(e){
-  // Hard reset of legacy pan state. If this gesture belongs to the route,
-  // map panning is not allowed to remain armed from any previous event.
+function alignmentMeasure(coords){
+  const points=coords.map(q=>project(...q)),cumulative=[0];
+  for(let i=1;i<points.length;i++){
+    cumulative.push(cumulative.at(-1)+Math.hypot(points[i][0]-points[i-1][0],points[i][1]-points[i-1][1]));
+  }
+  return {coords,points,cumulative};
+}
+
+function stationAnchorsOnAlignment(line,baseAlignment){
+  const m=alignmentMeasure(baseAlignment),rows=[];
+  let minAlong=-Infinity;
+  for(let stationIndex=0;stationIndex<(line.stations||[]).length;stationIndex++){
+    const station=muniById[line.stations[stationIndex]];
+    if(!station)continue;
+    const p=project(station.lon,station.lat);
+    let best=null;
+    for(let i=1;i<m.points.length;i++){
+      const q=routeProjectOnSegment(p,m.points[i-1],m.points[i]);
+      const along=m.cumulative[i-1]+q.segLen*q.t;
+      if(along+1e-6<minAlong)continue;
+      if(!best||q.d<best.d)best={...q,segment:i,along};
+    }
+    if(!best)continue;
+    minAlong=Math.max(minAlong,best.along);
+    const before=Math.max(0,best.segment-1),after=Math.min(baseAlignment.length-1,best.segment);
+    const db=Math.hypot(p[0]-m.points[before][0],p[1]-m.points[before][1]);
+    const da=Math.hypot(p[0]-m.points[after][0],p[1]-m.points[after][1]);
+    rows.push({
+      stationIndex,
+      station,
+      along:best.along,
+      vertexIndex:db<=da?before:after
+    });
+  }
+  return rows;
+}
+
+function stationIndexForLineHit(line,row,baseAlignment,cx,cy){
+  if(!(line.stations||[]).length)return null;
+
+  // When the stop-to-stop view is shown, the rendered segment index maps
+  // directly to the next stop in the ordered station list.
+  if(!realRailRoute&&!line.sourceServiceId){
+    return clamp(row.hit.segment,0,line.stations.length-1);
+  }
+
+  const anchors=stationAnchorsOnAlignment(line,baseAlignment);
+  if(!anchors.length)return null;
+
+  // Convert the pointer hit to the alignment measure, because the rendered
+  // geometry can be a densified analysis line.
+  const pointer=routeClientPoint(cx,cy);
+  const am=alignmentMeasure(baseAlignment);
+  const ah=closestPointOnMeasuredRoute(am,pointer);
+  const along=ah?.along??0;
+  const eps=2*routeUserUnitsPerPixel();
+  for(const a of anchors){
+    if(a.along>along+eps)return a.stationIndex;
+  }
+  return anchors.at(-1).stationIndex;
+}
+
+function pivotGeometryForStation(drag,coord){
+  const base=drag.baseAlignment;
+  const out=[];
+  if(drag.prevVertex!==null){
+    for(let i=0;i<=drag.prevVertex;i++)out.push([+base[i][0],+base[i][1]]);
+  }
+  out.push([+coord[0],+coord[1]]);
+  if(drag.nextVertex!==null){
+    for(let i=drag.nextVertex;i<base.length;i++)out.push([+base[i][0],+base[i][1]]);
+  }
+  return out.length>1?out:base.map(q=>[...q]);
+}
+
+function drawRouteDragHandle(coord,snapped=false){
+  const layer=byId('capa-linies');if(!layer||!coord)return;
+  const old=layer.querySelector('#route-drag-handle');if(old)old.remove();
+  const [x,y]=project(...coord),r=6*routeUserUnitsPerPixel();
+  const c=document.createElementNS('http://www.w3.org/2000/svg','circle');
+  c.id='route-drag-handle';
+  c.setAttribute('cx',x);c.setAttribute('cy',y);c.setAttribute('r',r);
+  c.setAttribute('fill',snapped?'#ffd166':'#ffffff');
+  c.setAttribute('stroke','#ff6b35');c.setAttribute('stroke-width',2);
+  c.setAttribute('vector-effect','non-scaling-stroke');
+  c.style.pointerEvents='none';
+  layer.appendChild(c);
+}
+
+function clearRouteDragHandle(){
+  const h=byId('capa-linies')?.querySelector('#route-drag-handle');if(h)h.remove();
+}
+
+let routeDrag=null;
+
+function consumeRouteGesture(e){
+  // The old map listener stores pan state in these globals. Reset them before
+  // stopping propagation so a route gesture can never continue a map pan.
   dragging=false;
+  dragMoved=true;
   dragStart=null;
   vbStart=null;
-  dragMoved=true;
   e.preventDefault();
   e.stopPropagation();
   e.stopImmediatePropagation();
 }
 
-function beginDirectRouteDrag(line,hit,e,origin,stationIndex=null){
-  const base=editableAlignment(line).map(q=>[+q[0],+q[1]]);
-  if(base.length<2)return false;
+function beginStationRouteDrag(line,stationIndex,e,origin){
+  const baseAlignment=alignmentForScenario(line);
+  if(baseAlignment.length<2)return false;
+  const anchors=stationAnchorsOnAlignment(line,baseAlignment);
+  const pos=anchors.findIndex(a=>a.stationIndex===stationIndex);
+  if(pos<0)return false;
 
-  // Clicking a route is also an unambiguous selection of that route.
-  state.activeId=line.id;
-  line.alignment=base.map(q=>[...q]);
+  const station=muniById[line.stations[stationIndex]];
+  if(!station)return false;
 
-  let index=nearestVertexToHit(line,hit);
-  let inserted=false;
-  if(index===null){
-    const ll=routeHitLonLat(line,hit);
-    index=hit.segment;
-    line.alignment.splice(index,0,ll);
-    inserted=true;
-  }
-
-  directRouteDrag={
+  routeDrag={
+    type:'station',
     lineId:line.id,
     pointerId:e.pointerId,
-    index,
-    inserted,
     stationIndex,
-    baseAlignment:base,
-    baseStations:[...(line.stations||[])],
+    originalStationId:String(line.stations[stationIndex]),
+    baseStations:[...line.stations],
+    baseAlignment:baseAlignment.map(q=>[...q]),
+    prevVertex:pos>0?anchors[pos-1].vertexIndex:null,
+    nextVertex:pos<anchors.length-1?anchors[pos+1].vertexIndex:null,
     startClient:[e.clientX,e.clientY],
     moved:false,
     snapped:null,
     origin
   };
 
+  state.activeId=line.id;
+  line.alignment=baseAlignment.map(q=>[...q]);
   line.analysis=null;
+  drawRouteDragHandle([+station.lon,+station.lat],false);
   try{svg.setPointerCapture(e.pointerId)}catch{}
-  console.debug('[Ferrocat] route drag start',{line:line.id,origin,stationIndex});
-  consumeDirectRouteGesture(e);
+  consumeRouteGesture(e);
   return true;
 }
 
-function pointerStartedInsideMap(e){
+function beginFreeRouteDrag(line,row,e){
+  const base=alignmentForScenario(line);
+  if(base.length<2)return false;
+  const p=routeClientPoint(e.clientX,e.clientY);
+  const m=alignmentMeasure(base);
+  const hit=closestPointOnMeasuredRoute(m,p);
+  if(!hit)return false;
+
+  const a=base[hit.segment-1],b=base[hit.segment];
+  const ll=[
+    +a[0]+(+b[0]-+a[0])*hit.t,
+    +a[1]+(+b[1]-+a[1])*hit.t
+  ];
+  const work=base.map(q=>[...q]);
+  const index=hit.segment;
+  work.splice(index,0,ll);
+
+  routeDrag={
+    type:'free',
+    lineId:line.id,
+    pointerId:e.pointerId,
+    index,
+    baseAlignment:base.map(q=>[...q]),
+    startClient:[e.clientX,e.clientY],
+    moved:false,
+    snapped:null,
+    origin:'line-no-stations'
+  };
+
+  state.activeId=line.id;
+  line.alignment=work;
+  line.analysis=null;
+  drawRouteDragHandle(ll,false);
+  try{svg.setPointerCapture(e.pointerId)}catch{}
+  consumeRouteGesture(e);
+  return true;
+}
+
+function pointerInsideMap(e){
   return e.target===svg||svg.contains(e.target);
 }
 
 parentElement.addEventListener('pointerdown',e=>{
-  if(e.button!==0||directRouteDrag||!pointerStartedInsideMap(e))return;
+  if(e.button!==0||routeDrag||!pointerInsideMap(e))return;
 
-  // Priority 1: a station already used by a scenario line.
-  const station=bestSelectedStationHit(e.clientX,e.clientY);
-  if(station){
-    const hit=nearestRouteHitToStation(station.line,station.m);
-    if(hit){
-      beginDirectRouteDrag(station.line,hit,e,'selected-station',station.stationIndex);
-      return;
-    }
-  }
-
-  // Priority 2: any scenario line itself. No activeId prerequisite.
-  const route=bestScenarioLineHit(e.clientX,e.clientY);
-  if(route){
-    beginDirectRouteDrag(route.line,route.hit,e,'line',null);
+  // Exact selected-station hit gets first priority.
+  const stationHit=bestSelectedStationHit(e.clientX,e.clientY);
+  if(stationHit){
+    beginStationRouteDrag(stationHit.line,stationHit.stationIndex,e,'selected-station');
     return;
   }
 
-  // ELSE: deliberately do nothing. Legacy #mapa pointerdown starts map pan.
+  // Otherwise test the exact geometry currently painted on screen.
+  const lineHit=bestScenarioLineHit(e.clientX,e.clientY);
+  if(!lineHit)return; // ELSE -> legacy map pan
+
+  const baseAlignment=alignmentForScenario(lineHit.line);
+  const stationIndex=stationIndexForLineHit(lineHit.line,lineHit,baseAlignment,e.clientX,e.clientY);
+  if(stationIndex!==null){
+    beginStationRouteDrag(lineHit.line,stationIndex,e,'line');
+    return;
+  }
+
+  // Trace-only/imported geometry has no authoritative station sequence. It can
+  // still be reshaped directly without pretending to know its stops.
+  beginFreeRouteDrag(lineHit.line,lineHit,e);
 },{capture:true});
 
 parentElement.addEventListener('pointermove',e=>{
-  if(!directRouteDrag||e.pointerId!==directRouteDrag.pointerId)return;
-  const line=state.lines.find(x=>x.id===directRouteDrag.lineId);
-  if(!line)return;
+  if(!routeDrag||e.pointerId!==routeDrag.pointerId)return;
+  const line=state.lines.find(x=>x.id===routeDrag.lineId);
+  if(!line){consumeRouteGesture(e);return;}
 
-  const dx=e.clientX-directRouteDrag.startClient[0];
-  const dy=e.clientY-directRouteDrag.startClient[1];
-  if(!directRouteDrag.moved&&Math.hypot(dx,dy)<2){
-    consumeDirectRouteGesture(e);
-    return;
+  const dx=e.clientX-routeDrag.startClient[0],dy=e.clientY-routeDrag.startClient[1];
+  if(!routeDrag.moved&&Math.hypot(dx,dy)<2){consumeRouteGesture(e);return;}
+  routeDrag.moved=true;
+
+  const snap=routeMunicipalitySnap(
+    e.clientX,e.clientY,20,
+    routeDrag.type==='station'?routeDrag.originalStationId:null
+  );
+  const p=routeClientPoint(e.clientX,e.clientY);
+  const coord=snap?.coord||unproject(p[0],p[1]);
+  routeDrag.snapped=snap;
+
+  if(routeDrag.type==='station'){
+    line.alignment=pivotGeometryForStation(routeDrag,coord);
+  }else{
+    line.alignment[routeDrag.index]=coord;
   }
-
-  directRouteDrag.moved=true;
-  const snap=routeSnapMunicipality(e.clientX,e.clientY);
-  const mapPoint=svgPoint(e.clientX,e.clientY);
-  const coord=snap?.coord||unproject(mapPoint[0],mapPoint[1]);
-  line.alignment[directRouteDrag.index]=coord;
   line.analysis=null;
-  directRouteDrag.snapped=snap;
 
   renderScenario();
   renderLines();
   renderSummary();
-  consumeDirectRouteGesture(e);
+  drawRouteDragHandle(coord,!!snap);
+  consumeRouteGesture(e);
 },{capture:true});
 
-function finishDirectRouteDrag(e){
-  if(!directRouteDrag)return;
-  const drag=directRouteDrag;
+function finishRouteDrag(e){
+  if(!routeDrag)return;
+  const drag=routeDrag;
   const line=state.lines.find(x=>x.id===drag.lineId);
 
-  if(line&&!drag.moved){
-    // Pure click selects the line but must not change its geometry.
-    line.alignment=drag.baseAlignment.map(q=>[...q]);
-  }else if(line&&drag.origin==='selected-station'&&drag.stationIndex!==null&&drag.snapped){
-    const targetId=String(drag.snapped.m.id);
-    const duplicate=line.stations.some((id,i)=>i!==drag.stationIndex&&String(id)===targetId);
-    if(!duplicate)line.stations[drag.stationIndex]=targetId;
+  if(line){
+    if(drag.type==='station'){
+      if(drag.moved&&drag.snapped){
+        const target=drag.snapped.m;
+        const duplicate=line.stations.some((id,i)=>i!==drag.stationIndex&&String(id)===String(target.id));
+        if(!duplicate){
+          line.stations[drag.stationIndex]=String(target.id);
+          line.alignment=pivotGeometryForStation(drag,[+target.lon,+target.lat]);
+        }else{
+          line.stations=[...drag.baseStations];
+          line.alignment=drag.baseAlignment.map(q=>[...q]);
+        }
+      }else{
+        line.stations=[...drag.baseStations];
+        line.alignment=drag.baseAlignment.map(q=>[...q]);
+      }
+    }else if(!drag.moved){
+      line.alignment=drag.baseAlignment.map(q=>[...q]);
+    }
+    line.analysis=null;
   }
-  if(line)line.analysis=null;
 
-  directRouteDrag=null;
+  routeDrag=null;
+  clearRouteDragHandle();
   save();
   render();
-  consumeDirectRouteGesture(e);
+  consumeRouteGesture(e);
 }
 
 parentElement.addEventListener('pointerup',e=>{
-  if(directRouteDrag&&e.pointerId===directRouteDrag.pointerId)finishDirectRouteDrag(e);
+  if(routeDrag&&e.pointerId===routeDrag.pointerId)finishRouteDrag(e);
 },{capture:true});
 
 parentElement.addEventListener('pointercancel',e=>{
-  if(directRouteDrag&&e.pointerId===directRouteDrag.pointerId)finishDirectRouteDrag(e);
+  if(routeDrag&&e.pointerId===routeDrag.pointerId)finishRouteDrag(e);
 },{capture:true});
