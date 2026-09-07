@@ -9,6 +9,6 @@ scikit-image
 # Offline data-building dependencies. Not required by Streamlit at runtime.
 geopandas>=1.0,<2
 shapely>=2.0,<3
-pyproj>=3.6,<4
+pyproj>=3.7.2,<4
 numpy>=2.0,<3
 rasterio>=1.4,<2
