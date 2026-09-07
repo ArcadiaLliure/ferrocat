@@ -11,4 +11,4 @@ geopandas>=1.0,<2
 shapely>=2.0,<3
 pyproj>=3.6,<4
 numpy>=2.0,<3
-rasterio>=1.4,<2
+rasterio>=1.5.1,<2
