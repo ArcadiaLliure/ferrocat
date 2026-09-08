@@ -798,6 +798,13 @@ def prepare_terrain(
     )
     prepare_terrain_visuals(interval=contour_interval)
 
+    # L'optimitzador de traçat treballa sobre la mateixa graella coarse del DEM.
+    # Generem aquí els condicionants ICGC perquè l'execució normal del pipeline
+    # deixi Ferrocat complet: hidrografia, sòl urbanitzat i carreteres.
+    from pipelines import prepare_route_constraints
+
+    prepare_route_constraints.build(refresh=refresh)
+
 
 # =============================================================================
 # CONFIGURACIÓ FRONTEND / PUBLICACIÓ SEGURA
