@@ -71,6 +71,7 @@
         padding:13px 13px 36px!important;
         border-left:0!important;
         overflow-y:auto!important;
+        visibility:visible!important;
       }
     }
   `;
@@ -137,7 +138,6 @@
     hinge.setAttribute('aria-expanded',collapsed?'false':'true');
 
     if(saveState)persist(collapsed);
-    if(!animate)requestAnimationFrame(()=>layout.classList.remove('ferro-sidebar-resizing'));
   }
 
   function rerenderMapAfterResize(){
@@ -197,7 +197,10 @@
 
   const win=parentElement.ownerDocument?.defaultView||window;
   win.addEventListener('resize',()=>{
-    if(!desktop())return;
+    if(!desktop()){
+      aside.setAttribute('aria-hidden','false');
+      return;
+    }
     if(currentWidth>0)applyWidth(Math.min(currentWidth,maxWidth()),{saveState:false});
     else hinge.style.right='0px';
     rerenderMapAfterResize();
