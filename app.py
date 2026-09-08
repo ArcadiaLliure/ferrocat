@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-FERROCAT_VERSION = "1.5.0"
+FERROCAT_VERSION = "1.5.1"
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
@@ -20,7 +20,9 @@ COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
 ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
+ROUTE_OPTIMIZER_JS = FRONTEND / "route_optimizer.js"
 PROFILE_LINKING_JS = FRONTEND / "profile_linking.js"
+GESTURE_ARBITRATION_JS = FRONTEND / "gesture_arbitration.js"
 SIDEBAR_RESIZE_JS = FRONTEND / "sidebar_resize.js"
 
 OD_PARQUET = DATA / "od_catalunya.parquet"
@@ -32,6 +34,7 @@ RAIL_SERVICES_JSON = DATA / "rail" / "services.runtime.json"
 RAIL_STATIONS_JSON = DATA / "rail" / "stations.runtime.json"
 TERRAIN_MANIFEST_JSON = DATA / "terrain" / "terrain_manifest.json"
 TERRAIN_COARSE_JSON = DATA / "terrain" / "coarse.runtime.json"
+ROUTE_CONSTRAINTS_JSON = DATA / "terrain" / "constraints.runtime.json"
 
 STATIC = ROOT / "static"
 ROAD_MANIFEST_JSON = STATIC / "roads" / "manifest.json"
@@ -196,12 +199,13 @@ def load_frontend_payload() -> tuple[list[dict], list[list], list[dict], dict]:
 
 
 @st.cache_data(show_spinner=False)
-def load_runtime_payload() -> tuple[Any, Any, Any, Any, Any, Any, list[dict], Any, Any]:
+def load_runtime_payload() -> tuple[Any, Any, Any, Any, Any, Any, Any, list[dict], Any, Any]:
     rail_infrastructure = load_json(RAIL_INFRASTRUCTURE_JSON, [], required=False)
     rail_services = load_json(RAIL_SERVICES_JSON, [], required=False)
     rail_stations = load_json(RAIL_STATIONS_JSON, [], required=False)
     terrain_manifest = load_json(TERRAIN_MANIFEST_JSON, {}, required=False)
     terrain_coarse = load_json(TERRAIN_COARSE_JSON, {}, required=False)
+    route_constraints = load_json(ROUTE_CONSTRAINTS_JSON, {}, required=False)
     road_manifest = load_json(ROAD_MANIFEST_JSON, {}, required=False)
     roads_overview = load_road_overview()
     terrain_contours = load_json(TERRAIN_CONTOURS_JSON, {}, required=False)
@@ -212,6 +216,7 @@ def load_runtime_payload() -> tuple[Any, Any, Any, Any, Any, Any, list[dict], An
         rail_stations,
         terrain_manifest,
         terrain_coarse,
+        route_constraints,
         road_manifest,
         roads_overview,
         terrain_contours,
@@ -239,6 +244,7 @@ try:
         rail_stations,
         terrain_manifest,
         terrain_coarse,
+        route_constraints,
         road_manifest,
         roads_overview,
         terrain_contours,
@@ -260,7 +266,9 @@ template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
 route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
+route_optimizer_js = ROUTE_OPTIMIZER_JS.read_text(encoding="utf-8")
 profile_linking_js = PROFILE_LINKING_JS.read_text(encoding="utf-8")
+gesture_arbitration_js = GESTURE_ARBITRATION_JS.read_text(encoding="utf-8")
 sidebar_resize_js = SIDEBAR_RESIZE_JS.read_text(encoding="utf-8")
 
 js = f"""export default function(component) {{
@@ -280,6 +288,7 @@ js = f"""export default function(component) {{
 
   const TERRAIN_MANIFEST = data.terrain_manifest || {{}};
   const TERRAIN_COARSE = data.terrain_coarse || {{}};
+  const ROUTE_CONSTRAINTS = data.route_constraints || {{}};
   const TERRAIN_CONTOURS = data.terrain_contours || {{}};
   const ATTRIBUTIONS = data.attributions || {{items: []}};
 
@@ -287,13 +296,17 @@ js = f"""export default function(component) {{
 
 {route_editing_js}
 
+{route_optimizer_js}
+
 {profile_linking_js}
+
+{gesture_arbitration_js}
 
 {sidebar_resize_js}
 }}"""
 
 rail_app = st.components.v2.component(
-    "ferrocat_fullscreen_v1_5_0_public_sources",
+    "ferrocat_fullscreen_v1_5_1_route_optimizer",
     html=html_fragment,
     css=css,
     js=js,
@@ -313,10 +326,11 @@ rail_app(
         "roads_overview": roads_overview,
         "terrain_manifest": terrain_manifest,
         "terrain_coarse": terrain_coarse,
+        "route_constraints": route_constraints,
         "terrain_contours": terrain_contours,
         "attributions": attributions,
     },
-    key="ferrocat_fullscreen_v1_5_0_public_sources",
+    key="ferrocat_fullscreen_v1_5_1_route_optimizer",
     width="stretch",
     height="content",
 )
