@@ -19,6 +19,7 @@ MUNICIPIS_CSV = REFERENCE / "municipis_catalunya.csv"
 COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
+HELP_JS = FRONTEND / "help.js"
 ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
 ROUTE_OPTIMIZER_JS = FRONTEND / "route_optimizer.js"
 ROUTE_OPTIMIZER_COSTS_JS = FRONTEND / "route_optimizer_costs.js"
@@ -89,7 +90,6 @@ def load_json(path: Path, default: Any, *, required: bool = False) -> Any:
             raise RuntimeError(f"No s'ha pogut llegir {path}: {exc}") from exc
         print(f"[Ferrocat] WARN: no s'ha pogut llegir {path}: {exc}")
         return default
-
 
 
 def load_road_overview() -> list[dict]:
@@ -319,6 +319,7 @@ if not hasattr(st.components, "v2"):
 template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
+help_js = HELP_JS.read_text(encoding="utf-8")
 route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
 route_optimizer_js = ROUTE_OPTIMIZER_JS.read_text(encoding="utf-8")
 route_optimizer_costs_js = ROUTE_OPTIMIZER_COSTS_JS.read_text(encoding="utf-8")
@@ -350,6 +351,8 @@ js = f"""export default function(component) {{
   const ATTRIBUTIONS = data.attributions || {{items: []}};
 
 {client_js}
+
+{help_js}
 
 {route_editing_js}
 
