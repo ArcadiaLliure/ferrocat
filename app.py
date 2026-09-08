@@ -91,12 +91,15 @@ def load_json(path: Path, default: Any, *, required: bool = False) -> Any:
         return default
 
 
+
 def load_road_overview() -> list[dict]:
     """Carga un overview compacto y garantizado de la red viaria principal."""
     if ROAD_OVERVIEW_JSON.exists():
         rows = load_json(ROAD_OVERVIEW_JSON, [], required=False)
         return rows if isinstance(rows, list) else []
 
+    # Compatibilidad con V3: si todavía no existe overview.json, intentamos
+    # construir el fallback inline directamente desde LOD0.
     if not ROAD_LOD0_DIR.exists():
         return []
 
@@ -190,26 +193,74 @@ def load_frontend_payload() -> tuple[list[dict], list[list], list[dict], dict]:
     od = od.groupby(["za", "zb"], as_index=False)["viatges_dia"].sum()
 
     od_records = [
-        [str(row.za), str(row.zb), round(float(row.viatges_dia), 4)]
+        [
+            str(row.za),
+            str(row.zb),
+            round(float(row.viatges_dia), 4),
+        ]
         for row in od.itertuples(index=False)
     ]
 
     comarques = load_json(COMARQUES_JSON, [], required=True)
     meta = load_json(META_JSON, {}, required=False)
+
     return muni_records, od_records, comarques, meta
 
 
 @st.cache_data(show_spinner=False)
-def load_runtime_payload() -> tuple[Any, Any, Any, Any, Any, Any, Any, list[dict], Any, Any]:
-    rail_infrastructure = load_json(RAIL_INFRASTRUCTURE_JSON, [], required=False)
-    rail_services = load_json(RAIL_SERVICES_JSON, [], required=False)
-    rail_stations = load_json(RAIL_STATIONS_JSON, [], required=False)
-    terrain_manifest = load_json(TERRAIN_MANIFEST_JSON, {}, required=False)
-    terrain_coarse = load_json(TERRAIN_COARSE_JSON, {}, required=False)
-    route_constraints = load_json(ROUTE_CONSTRAINTS_JSON, {}, required=False)
-    road_manifest = load_json(ROAD_MANIFEST_JSON, {}, required=False)
+def load_runtime_payload() -> tuple[
+    Any,
+    Any,
+    Any,
+    Any,
+    Any,
+    Any,
+    Any,
+    list[dict],
+    Any,
+    Any,
+]:
+    rail_infrastructure = load_json(
+        RAIL_INFRASTRUCTURE_JSON,
+        [],
+        required=False,
+    )
+    rail_services = load_json(
+        RAIL_SERVICES_JSON,
+        [],
+        required=False,
+    )
+    rail_stations = load_json(
+        RAIL_STATIONS_JSON,
+        [],
+        required=False,
+    )
+    terrain_manifest = load_json(
+        TERRAIN_MANIFEST_JSON,
+        {},
+        required=False,
+    )
+    terrain_coarse = load_json(
+        TERRAIN_COARSE_JSON,
+        {},
+        required=False,
+    )
+    route_constraints = load_json(
+        ROUTE_CONSTRAINTS_JSON,
+        {},
+        required=False,
+    )
+    road_manifest = load_json(
+        ROAD_MANIFEST_JSON,
+        {},
+        required=False,
+    )
     roads_overview = load_road_overview()
-    terrain_contours = load_json(TERRAIN_CONTOURS_JSON, {}, required=False)
+    terrain_contours = load_json(
+        TERRAIN_CONTOURS_JSON,
+        {},
+        required=False,
+    )
     attributions = load_json(ATTRIBUTIONS_JSON, {"items": []}, required=False)
     return (
         rail_infrastructure,
@@ -233,7 +284,9 @@ def extract_component_assets(template: str) -> tuple[str, str]:
         flags=re.S,
     )
     if not style or not body:
-        raise RuntimeError("frontend/index.html no té l'estructura esperada")
+        raise RuntimeError(
+            "frontend/index.html no té l'estructura esperada"
+        )
     return body.group(1).strip(), style.group(1).strip()
 
 
@@ -285,6 +338,8 @@ js = f"""export default function(component) {{
   const RAIL_SERVICES = data.rail_services || [];
   const RAIL_STATIONS = data.rail_stations || [];
 
+  // Carreteres: manifest + LOD0 s'injecten com a fallback.
+  // Els LOD detallats es carreguen sota demanda des de /app/static/roads.
   const ROAD_MANIFEST = data.road_manifest || {{}};
   const ROADS = data.roads_overview || [];
 
