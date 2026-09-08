@@ -21,6 +21,7 @@ TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
 HELP_JS = FRONTEND / "help.js"
 ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
+ACTIVE_LINE_LOCK_JS = FRONTEND / "active_line_lock.js"
 ROUTE_OPTIMIZER_JS = FRONTEND / "route_optimizer.js"
 ROUTE_OPTIMIZER_COSTS_JS = FRONTEND / "route_optimizer_costs.js"
 PROFILE_LINKING_JS = FRONTEND / "profile_linking.js"
@@ -321,6 +322,7 @@ html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
 help_js = HELP_JS.read_text(encoding="utf-8")
 route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
+active_line_lock_js = ACTIVE_LINE_LOCK_JS.read_text(encoding="utf-8")
 route_optimizer_js = ROUTE_OPTIMIZER_JS.read_text(encoding="utf-8")
 route_optimizer_costs_js = ROUTE_OPTIMIZER_COSTS_JS.read_text(encoding="utf-8")
 profile_linking_js = PROFILE_LINKING_JS.read_text(encoding="utf-8")
@@ -355,6 +357,8 @@ js = f"""export default function(component) {{
 {help_js}
 
 {route_editing_js}
+
+{active_line_lock_js}
 
 {route_optimizer_js}
 
