@@ -166,3 +166,407 @@ const FERROCAT_FIELD_HELP = Object.freeze({
     if (focused) focused.blur();
   });
 })();
+
+/* -------------------------------------------------------------------------
+ * Correcció del motor de traçat topogràfic.
+ *
+ * El motor original del navegador feia un A* només per cel·la i després
+ * dibuixava directament els centres del DEM de 500 m. Això permetia ziga-zagues
+ * de 45/90 graus, podia saltar-se estacions intermèdies i, des de 1.4, tenia un
+ * corredor de cerca de ±25 km. Aquest bloc substitueix únicament el routing
+ * interactiu mantenint el mateix model de túnels, viaductes i perfil vertical.
+ * ------------------------------------------------------------------------- */
+(function installStableTerrainRouting() {
+  const ROUTE_CORRIDOR_M = Math.min(Number(SEARCH_CORRIDOR_M) || 10000, 10000);
+  const MAX_ITERS_PER_LEG = 180000;
+  const DIRS = [
+    [1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1]
+  ];
+
+  function sourceCoords(line) {
+    if (line?.alignment?.length > 1) {
+      return line.alignment
+        .filter(p => Array.isArray(p) && p.length >= 2 && Number.isFinite(+p[0]) && Number.isFinite(+p[1]))
+        .map(p => [+p[0], +p[1]]);
+    }
+    return (line?.stations || [])
+      .map(id => muniById[id])
+      .filter(Boolean)
+      .map(m => [+m.lon, +m.lat]);
+  }
+
+  function stateKey(x, y, dir, width) {
+    return `${y * width + x}:${dir}`;
+  }
+
+  function stateCell(key, width) {
+    const idx = Number(String(key).split(':', 1)[0]);
+    return [idx % width, Math.floor(idx / width)];
+  }
+
+  function turnSteps(a, b) {
+    if (a < 0 || b < 0) return 0;
+    const d = Math.abs(a - b);
+    return Math.min(d, 8 - d);
+  }
+
+  function headingPenalty(prevDir, nextDir, resolution) {
+    const turn = turnSteps(prevDir, nextDir);
+    if (turn === 0) return 0;
+    if (turn === 4) return Infinity;
+    if (turn === 1) return 0.60 * resolution;
+    if (turn === 2) return 2.00 * resolution;
+    return 5.00 * resolution;
+  }
+
+  function routeLeg(start, goal, guide, allowTunnel) {
+    if (!start || !goal) return null;
+    if (start[0] === goal[0] && start[1] === goal[1]) return [[...start]];
+
+    const res = +TERRAIN_COARSE.resolution_m;
+    const width = +TERRAIN_COARSE.width;
+    const height = +TERRAIN_COARSE.height;
+    const corridor = Math.max(4, Math.round(ROUTE_CORRIDOR_M / res));
+    const heap = new Heap();
+    const best = new Map();
+    const parent = new Map();
+    const startKey = stateKey(start[0], start[1], -1, width);
+
+    best.set(startKey, 0);
+    heap.push([Math.hypot(goal[0]-start[0], goal[1]-start[1]) * res, 0, start[0], start[1], -1]);
+
+    let foundKey = null;
+    let iterations = 0;
+
+    while (heap.length && iterations++ < MAX_ITERS_PER_LEG) {
+      const current = heap.pop();
+      const g = current[1];
+      const x = current[2];
+      const y = current[3];
+      const prevDir = current[4];
+      const key = stateKey(x, y, prevDir, width);
+      if (g !== best.get(key)) continue;
+
+      if (x === goal[0] && y === goal[1]) {
+        foundKey = key;
+        break;
+      }
+
+      const z = elev([x, y]);
+      if (z === null) continue;
+
+      for (let dir = 0; dir < DIRS.length; dir++) {
+        const [dx, dy] = DIRS[dir];
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        if (distToTrace([nx, ny], guide) > corridor) continue;
+
+        const turnCost = headingPenalty(prevDir, dir, res);
+        if (!Number.isFinite(turnCost)) continue;
+
+        const nz = elev([nx, ny]);
+        if (nz === null) continue;
+
+        const step = Math.hypot(dx, dy) * res;
+        const grade = Math.abs(nz - z) / Math.max(step, 1) * 1000;
+        if (grade > params.maxGradient && !allowTunnel) continue;
+
+        let cost = step;
+        cost += distToTrace([nx, ny], guide) * res * 0.08;
+        if (grade > 25) cost += (grade - 25) * 12;
+        if (grade > params.maxGradient) {
+          cost += step * 3.2 + (grade - params.maxGradient) * 250;
+        }
+        cost += turnCost;
+
+        const nextKey = stateKey(nx, ny, dir, width);
+        const nextG = g + cost;
+        if (nextG >= (best.get(nextKey) ?? Infinity)) continue;
+
+        best.set(nextKey, nextG);
+        parent.set(nextKey, key);
+        const heuristic = Math.hypot(goal[0] - nx, goal[1] - ny) * res;
+        heap.push([nextG + heuristic, nextG, nx, ny, dir]);
+      }
+    }
+
+    if (!foundKey) return null;
+
+    const path = [];
+    let key = foundKey;
+    while (key) {
+      path.push(stateCell(key, width));
+      if (key === startKey) break;
+      key = parent.get(key);
+      if (!key) return null;
+    }
+    path.reverse();
+    return path;
+  }
+
+  function routeLine(line, allowTunnel = false) {
+    if (!terrainReady()) return null;
+
+    const ll = sourceCoords(line);
+    if (ll.length < 2) return null;
+
+    const waypoints = ll.map(terrainCell);
+    if (waypoints.some(p => !p)) return null;
+
+    const path = [];
+    const breaks = [];
+
+    for (let i = 1; i < waypoints.length; i++) {
+      const start = waypoints[i - 1];
+      const goal = waypoints[i];
+      const leg = routeLeg(start, goal, [start, goal], allowTunnel);
+      if (!leg?.length) return null;
+
+      if (!path.length) {
+        path.push(...leg);
+        breaks.push(0);
+      } else {
+        path.push(...leg.slice(1));
+      }
+      breaks.push(path.length - 1);
+    }
+
+    path.waypointBreaks = breaks;
+    path.waypointLL = ll;
+    return path;
+  }
+
+  function cellToUtm(cell) {
+    const res = +TERRAIN_COARSE.resolution_m;
+    const b = TERRAIN_COARSE.bbox;
+    return [
+      b[0] + (cell[0] + 0.5) * res,
+      b[3] - (cell[1] + 0.5) * res
+    ];
+  }
+
+  function compressStraightRuns(points) {
+    if (points.length <= 2) return points.map(p => [...p]);
+    const out = [[...points[0]]];
+    for (let i = 1; i < points.length - 1; i++) {
+      const a = out[out.length - 1];
+      const b = points[i];
+      const c = points[i + 1];
+      const abx = b[0] - a[0];
+      const aby = b[1] - a[1];
+      const bcx = c[0] - b[0];
+      const bcy = c[1] - b[1];
+      const cross = Math.abs(abx * bcy - aby * bcx);
+      const dot = abx * bcx + aby * bcy;
+      const norm = Math.max(1, Math.hypot(abx, aby) * Math.hypot(bcx, bcy));
+      if (dot > 0 && cross / norm < 0.025) continue;
+      out.push([...b]);
+    }
+    out.push([...points.at(-1)]);
+    return out;
+  }
+
+  function chaikin(points, iterations = 2) {
+    let current = points.map(p => [...p]);
+    for (let pass = 0; pass < iterations && current.length > 2; pass++) {
+      const next = [[...current[0]]];
+      for (let i = 0; i < current.length - 1; i++) {
+        const a = current[i];
+        const b = current[i + 1];
+        next.push([
+          0.75 * a[0] + 0.25 * b[0],
+          0.75 * a[1] + 0.25 * b[1]
+        ]);
+        next.push([
+          0.25 * a[0] + 0.75 * b[0],
+          0.25 * a[1] + 0.75 * b[1]
+        ]);
+      }
+      next.push([...current.at(-1)]);
+      current = next;
+    }
+    return current;
+  }
+
+  function smoothRoute(path) {
+    if (!path?.length) return [];
+
+    const breaks = Array.isArray(path.waypointBreaks) && path.waypointBreaks.length >= 2
+      ? path.waypointBreaks
+      : [0, path.length - 1];
+    const waypointLL = Array.isArray(path.waypointLL) ? path.waypointLL : [];
+    const out = [];
+
+    for (let leg = 0; leg < breaks.length - 1; leg++) {
+      const a = breaks[leg];
+      const b = breaks[leg + 1];
+      let pts = path.slice(a, b + 1).map(cellToUtm);
+
+      const exactStart = waypointLL[leg] ? llToUtm31(...waypointLL[leg]) : null;
+      const exactEnd = waypointLL[leg + 1] ? llToUtm31(...waypointLL[leg + 1]) : null;
+
+      if (!pts.length) pts = [];
+      if (exactStart && exactEnd && a === b) {
+        pts = [exactStart, exactEnd];
+      } else {
+        if (exactStart && pts.length) pts[0] = exactStart;
+        if (exactEnd && pts.length) pts[pts.length - 1] = exactEnd;
+      }
+
+      pts = compressStraightRuns(pts);
+      pts = chaikin(pts, 2);
+      if (exactStart && pts.length) pts[0] = exactStart;
+      if (exactEnd && pts.length) pts[pts.length - 1] = exactEnd;
+
+      const llPts = pts.map(p => utm31ToLL(p[0], p[1]));
+      if (out.length && llPts.length) llPts.shift();
+      out.push(...llPts);
+    }
+
+    return out;
+  }
+
+  function analyzeLine(line) {
+    if (!terrainReady()) {
+      return {warning:'No hi ha DEM runtime. Executa python -m pipelines.PREPARAR_FERROCAT --only terrain'};
+    }
+
+    let cells = routeLine(line, false);
+    const surface = !!cells;
+    let usedTunnel = false;
+
+    if (!cells) {
+      cells = routeLine(line, true);
+      usedTunnel = true;
+    }
+
+    if (!cells) {
+      return {
+        warning:`No s’ha pogut trobar un camí ferroviari continu dins d’un corredor de ±${Math.round(ROUTE_CORRIDOR_M/1000)} km. Revisa el traçat o afegeix un punt de pas.`
+      };
+    }
+
+    const res = +TERRAIN_COARSE.resolution_m;
+    const terrain = cells.map(elev);
+    const dist = [0];
+    for (let i = 1; i < cells.length; i++) {
+      dist.push(
+        dist.at(-1) + Math.hypot(
+          cells[i][0] - cells[i-1][0],
+          cells[i][1] - cells[i-1][1]
+        ) * res
+      );
+    }
+
+    const rail = [...terrain];
+    const maxGrade = params.maxGradient / 1000;
+    for (let pass = 0; pass < 6; pass++) {
+      for (let i = 1; i < rail.length; i++) {
+        const ds = dist[i] - dist[i-1];
+        rail[i] = clamp(
+          rail[i],
+          rail[i-1] - maxGrade * ds,
+          rail[i-1] + maxGrade * ds
+        );
+      }
+      for (let i = rail.length - 2; i >= 0; i--) {
+        const ds = dist[i+1] - dist[i];
+        rail[i] = clamp(
+          rail[i],
+          rail[i+1] - maxGrade * ds,
+          rail[i+1] + maxGrade * ds
+        );
+      }
+      rail[0] = terrain[0];
+      rail[rail.length - 1] = terrain.at(-1);
+    }
+
+    const kind = terrain.map((z, i) =>
+      z - rail[i] > 25 ? 'tunnel' : rail[i] - z > 18 ? 'viaduct' : 'surface'
+    );
+    const structures = [];
+    let start = 0;
+    for (let i = 1; i <= kind.length; i++) {
+      if (i === kind.length || kind[i] !== kind[start]) {
+        const end = i - 1;
+        const lengthKm = Math.max(0, dist[end] - dist[start]) / 1000;
+        if (kind[start] !== 'surface' && lengthKm >= 0.25) {
+          structures.push({
+            kind: kind[start],
+            startKm: dist[start] / 1000,
+            endKm: dist[end] / 1000,
+            lengthKm
+          });
+        }
+        start = i;
+      }
+    }
+
+    if (usedTunnel && !structures.some(s => s.kind === 'tunnel')) {
+      let peak = 0;
+      let maxCover = -Infinity;
+      terrain.forEach((z, i) => {
+        const cover = z - rail[i];
+        if (cover > maxCover) {
+          maxCover = cover;
+          peak = i;
+        }
+      });
+      const a = Math.max(0, peak - 2);
+      const b = Math.min(cells.length - 1, peak + 2);
+      structures.push({
+        kind:'tunnel',
+        startKm:dist[a]/1000,
+        endKm:dist[b]/1000,
+        lengthKm:Math.max(0, dist[b]-dist[a])/1000
+      });
+    }
+
+    let maxGradient = 0;
+    for (let i = 1; i < rail.length; i++) {
+      const ds = dist[i] - dist[i-1];
+      if (ds > 0) {
+        maxGradient = Math.max(
+          maxGradient,
+          Math.abs(rail[i] - rail[i-1]) / ds * 1000
+        );
+      }
+    }
+
+    const optimizedCoords = smoothRoute(cells);
+    return {
+      surfaceFeasible:surface,
+      usedTunnel,
+      optimizedCoords,
+      terrain,
+      rail,
+      distKm:dist.map(x => x/1000),
+      structures,
+      maxGradient,
+      routingVersion:'stable-v2',
+      warning:usedTunnel
+        ? 'No s’ha trobat una alternativa superficial ferroviàriament raonable dins del corredor: es proposen obres subterrànies.'
+        : null
+    };
+  }
+
+  // Substituïm les funcions que les accions existents ja consulten per binding.
+  terrainRoute = routeLine;
+  analyzeTerrain = analyzeLine;
+
+  // En mode estacions, acabar l'edició ha de fer realment l'anàlisi topogràfica.
+  // Abans només es desactivava l'edició i la línia quedava com una polilínia recta.
+  const stopButton = byId('btn-stop');
+  if (stopButton) {
+    stopButton.onclick = () => {
+      const line = activeLine();
+      if (line && terrainReady() && lineCoords(line).length > 1) {
+        line.analysis = analyzeTerrain(line);
+      }
+      state.activeId = null;
+      save();
+      render();
+    };
+  }
+})();
