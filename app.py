@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-FERROCAT_VERSION = "1.5.0"
+FERROCAT_VERSION = "1.5.1"
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND = ROOT / "frontend"
@@ -19,6 +19,7 @@ MUNICIPIS_CSV = REFERENCE / "municipis_catalunya.csv"
 COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
+HELP_JS = FRONTEND / "help.js"
 
 OD_PARQUET = DATA / "od_catalunya.parquet"
 REL_PARQUET = DATA / "municipi_ine_to_mitma.parquet"
@@ -82,7 +83,6 @@ def load_json(path: Path, default: Any, *, required: bool = False) -> Any:
             raise RuntimeError(f"No s'ha pogut llegir {path}: {exc}") from exc
         print(f"[Ferrocat] WARN: no s'ha pogut llegir {path}: {exc}")
         return default
-
 
 
 def load_road_overview() -> list[dict]:
@@ -304,6 +304,7 @@ if not hasattr(st.components, "v2"):
 template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
+help_js = HELP_JS.read_text(encoding="utf-8")
 
 js = f"""export default function(component) {{
   const {{ parentElement, data }} = component;
@@ -328,10 +329,12 @@ js = f"""export default function(component) {{
   const ATTRIBUTIONS = data.attributions || {{items: []}};
 
 {client_js}
+
+{help_js}
 }}"""
 
 rail_app = st.components.v2.component(
-    "ferrocat_fullscreen_v1_5_0_public_sources",
+    "ferrocat_fullscreen_v1_5_1_field_help",
     html=html_fragment,
     css=css,
     js=js,
@@ -354,7 +357,7 @@ rail_app(
         "terrain_contours": terrain_contours,
         "attributions": attributions,
     },
-    key="ferrocat_fullscreen_v1_5_0_public_sources",
+    key="ferrocat_fullscreen_v1_5_1_field_help",
     width="stretch",
     height="content",
 )
