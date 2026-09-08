@@ -19,7 +19,12 @@ MUNICIPIS_CSV = REFERENCE / "municipis_catalunya.csv"
 COMARQUES_JSON = REFERENCE / "comarques_catalunya.json"
 TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
-HELP_JS = FRONTEND / "help.js"
+ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
+ROUTE_OPTIMIZER_JS = FRONTEND / "route_optimizer.js"
+ROUTE_OPTIMIZER_COSTS_JS = FRONTEND / "route_optimizer_costs.js"
+PROFILE_LINKING_JS = FRONTEND / "profile_linking.js"
+GESTURE_ARBITRATION_JS = FRONTEND / "gesture_arbitration.js"
+SIDEBAR_RESIZE_JS = FRONTEND / "sidebar_resize.js"
 
 OD_PARQUET = DATA / "od_catalunya.parquet"
 REL_PARQUET = DATA / "municipi_ine_to_mitma.parquet"
@@ -30,6 +35,7 @@ RAIL_SERVICES_JSON = DATA / "rail" / "services.runtime.json"
 RAIL_STATIONS_JSON = DATA / "rail" / "stations.runtime.json"
 TERRAIN_MANIFEST_JSON = DATA / "terrain" / "terrain_manifest.json"
 TERRAIN_COARSE_JSON = DATA / "terrain" / "coarse.runtime.json"
+ROUTE_CONSTRAINTS_JSON = DATA / "terrain" / "constraints.runtime.json"
 
 STATIC = ROOT / "static"
 ROAD_MANIFEST_JSON = STATIC / "roads" / "manifest.json"
@@ -83,6 +89,7 @@ def load_json(path: Path, default: Any, *, required: bool = False) -> Any:
             raise RuntimeError(f"No s'ha pogut llegir {path}: {exc}") from exc
         print(f"[Ferrocat] WARN: no s'ha pogut llegir {path}: {exc}")
         return default
+
 
 
 def load_road_overview() -> list[dict]:
@@ -208,6 +215,7 @@ def load_runtime_payload() -> tuple[
     Any,
     Any,
     Any,
+    Any,
     list[dict],
     Any,
     Any,
@@ -237,6 +245,11 @@ def load_runtime_payload() -> tuple[
         {},
         required=False,
     )
+    route_constraints = load_json(
+        ROUTE_CONSTRAINTS_JSON,
+        {},
+        required=False,
+    )
     road_manifest = load_json(
         ROAD_MANIFEST_JSON,
         {},
@@ -255,6 +268,7 @@ def load_runtime_payload() -> tuple[
         rail_stations,
         terrain_manifest,
         terrain_coarse,
+        route_constraints,
         road_manifest,
         roads_overview,
         terrain_contours,
@@ -284,6 +298,7 @@ try:
         rail_stations,
         terrain_manifest,
         terrain_coarse,
+        route_constraints,
         road_manifest,
         roads_overview,
         terrain_contours,
@@ -304,7 +319,12 @@ if not hasattr(st.components, "v2"):
 template = TEMPLATE_HTML.read_text(encoding="utf-8")
 html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
-help_js = HELP_JS.read_text(encoding="utf-8")
+route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
+route_optimizer_js = ROUTE_OPTIMIZER_JS.read_text(encoding="utf-8")
+route_optimizer_costs_js = ROUTE_OPTIMIZER_COSTS_JS.read_text(encoding="utf-8")
+profile_linking_js = PROFILE_LINKING_JS.read_text(encoding="utf-8")
+gesture_arbitration_js = GESTURE_ARBITRATION_JS.read_text(encoding="utf-8")
+sidebar_resize_js = SIDEBAR_RESIZE_JS.read_text(encoding="utf-8")
 
 js = f"""export default function(component) {{
   const {{ parentElement, data }} = component;
@@ -325,16 +345,27 @@ js = f"""export default function(component) {{
 
   const TERRAIN_MANIFEST = data.terrain_manifest || {{}};
   const TERRAIN_COARSE = data.terrain_coarse || {{}};
+  const ROUTE_CONSTRAINTS = data.route_constraints || {{}};
   const TERRAIN_CONTOURS = data.terrain_contours || {{}};
   const ATTRIBUTIONS = data.attributions || {{items: []}};
 
 {client_js}
 
-{help_js}
+{route_editing_js}
+
+{route_optimizer_js}
+
+{route_optimizer_costs_js}
+
+{profile_linking_js}
+
+{gesture_arbitration_js}
+
+{sidebar_resize_js}
 }}"""
 
 rail_app = st.components.v2.component(
-    "ferrocat_fullscreen_v1_5_1_field_help",
+    "ferrocat_fullscreen_v1_5_1_route_optimizer",
     html=html_fragment,
     css=css,
     js=js,
@@ -354,10 +385,11 @@ rail_app(
         "roads_overview": roads_overview,
         "terrain_manifest": terrain_manifest,
         "terrain_coarse": terrain_coarse,
+        "route_constraints": route_constraints,
         "terrain_contours": terrain_contours,
         "attributions": attributions,
     },
-    key="ferrocat_fullscreen_v1_5_1_field_help",
+    key="ferrocat_fullscreen_v1_5_1_route_optimizer",
     width="stretch",
     height="content",
 )
