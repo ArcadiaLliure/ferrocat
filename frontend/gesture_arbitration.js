@@ -11,8 +11,8 @@
  */
 (() => {
   const doc=svg.ownerDocument;
-  if(!doc||doc.__ferrocatGestureArbitrationInstalled)return;
-  doc.__ferrocatGestureArbitrationInstalled=true;
+  if(!doc||svg.dataset.gestureArbitrationInstalled==='1')return;
+  svg.dataset.gestureArbitrationInstalled='1';
 
   const DRAG_THRESHOLD_PX=5;
   let pending=null;
