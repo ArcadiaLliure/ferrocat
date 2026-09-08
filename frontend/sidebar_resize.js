@@ -94,7 +94,10 @@
   let drag=null;
   let suppressClick=false;
 
-  function desktop(){return (parentElement.getBoundingClientRect().width||window.innerWidth)>900;}
+  function desktop(){
+    const width=layout.getBoundingClientRect().width;
+    return (Number.isFinite(width)&&width>0?width:window.innerWidth)>900;
+  }
   function maxWidth(){
     const total=Math.max(1,layout.getBoundingClientRect().width);
     return Math.max(MIN_WIDTH,Math.min(760,total*.62));
@@ -195,7 +198,7 @@
     rerenderMapAfterResize();
   });
 
-  const win=parentElement.ownerDocument?.defaultView||window;
+  const win=layout.ownerDocument?.defaultView||window;
   win.addEventListener('resize',()=>{
     if(!desktop()){
       aside.setAttribute('aria-hidden','false');
