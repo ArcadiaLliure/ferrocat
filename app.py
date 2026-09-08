@@ -21,6 +21,7 @@ TEMPLATE_HTML = FRONTEND / "index.html"
 APP_JS = FRONTEND / "app.js"
 ROUTE_EDITING_JS = FRONTEND / "route_editing.js"
 ROUTE_OPTIMIZER_JS = FRONTEND / "route_optimizer.js"
+ROUTE_OPTIMIZER_COSTS_JS = FRONTEND / "route_optimizer_costs.js"
 PROFILE_LINKING_JS = FRONTEND / "profile_linking.js"
 GESTURE_ARBITRATION_JS = FRONTEND / "gesture_arbitration.js"
 SIDEBAR_RESIZE_JS = FRONTEND / "sidebar_resize.js"
@@ -267,6 +268,7 @@ html_fragment, css = extract_component_assets(template)
 client_js = APP_JS.read_text(encoding="utf-8")
 route_editing_js = ROUTE_EDITING_JS.read_text(encoding="utf-8")
 route_optimizer_js = ROUTE_OPTIMIZER_JS.read_text(encoding="utf-8")
+route_optimizer_costs_js = ROUTE_OPTIMIZER_COSTS_JS.read_text(encoding="utf-8")
 profile_linking_js = PROFILE_LINKING_JS.read_text(encoding="utf-8")
 gesture_arbitration_js = GESTURE_ARBITRATION_JS.read_text(encoding="utf-8")
 sidebar_resize_js = SIDEBAR_RESIZE_JS.read_text(encoding="utf-8")
@@ -297,6 +299,8 @@ js = f"""export default function(component) {{
 {route_editing_js}
 
 {route_optimizer_js}
+
+{route_optimizer_costs_js}
 
 {profile_linking_js}
 
