@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -38,6 +40,8 @@ TERRAIN_CONTOURS_JSON = STATIC / "terrain" / "contours.json"
 ATTRIBUTIONS_JSON = DATA / "attributions.json"
 
 MAX_INLINE_ROAD_OVERVIEW_MB = 32.0
+ANALYSIS_TERRAIN_RESOLUTION_M = 200.0
+TERRAIN_NODATA = -32768
 
 st.set_page_config(
     page_title="Ferrocat — Simulador ferroviari de Catalunya",
@@ -115,6 +119,135 @@ def load_road_overview() -> list[dict]:
         if isinstance(chunk, list):
             rows.extend(chunk)
     return rows
+
+
+
+def build_analysis_terrain(
+    manifest: dict,
+    fallback: dict,
+    target_resolution_m: float = ANALYSIS_TERRAIN_RESOLUTION_M,
+) -> dict:
+    """Construeix el DEM d'anàlisi a partir dels tiles detallats del ICGC.
+
+    El runtime global antic és de 500 m i és massa gruixut per calcular
+    pendents, túnels i viaductes. Els tiles del manifest són normalment de
+    100 m; els agreguem a 200 m per mantenir el payload del component en una
+    mida raonable. L'agregació ignora NoData, cosa especialment important a
+    la costa, on una cel·la parcialment terrestre no ha de convertir-se en
+    un buit artificial.
+    """
+    if not isinstance(manifest, dict) or not isinstance(fallback, dict):
+        return fallback
+
+    tiles = manifest.get("tiles") or []
+    bbox = manifest.get("bbox") or []
+    try:
+        source_resolution = float(manifest.get("resolution_m"))
+        minx, miny, maxx, maxy = map(float, bbox)
+    except (TypeError, ValueError):
+        return fallback
+
+    if (
+        not tiles
+        or source_resolution <= 0
+        or target_resolution_m < source_resolution
+    ):
+        return fallback
+
+    factor = int(round(target_resolution_m / source_resolution))
+    if factor < 1 or not math.isclose(
+        source_resolution * factor,
+        target_resolution_m,
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        return fallback
+
+    source_width = int(math.ceil((maxx - minx) / source_resolution))
+    source_height = int(math.ceil((maxy - miny) / source_resolution))
+    if source_width <= 0 or source_height <= 0:
+        return fallback
+
+    source = np.full(
+        (source_height, source_width),
+        TERRAIN_NODATA,
+        dtype=np.int16,
+    )
+    loaded_tiles = 0
+
+    for tile in tiles:
+        try:
+            rows = int(tile["rows"])
+            cols = int(tile["cols"])
+            tx0, _ty0, _tx1, ty1 = map(float, tile["bbox"])
+            tile_path = DATA / "terrain" / str(tile["file"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if rows <= 0 or cols <= 0 or not tile_path.exists():
+            continue
+
+        arr = np.fromfile(tile_path, dtype="<i2")
+        if arr.size != rows * cols:
+            print(
+                f"[Ferrocat] WARN: tile DEM invàlid {tile_path.name}: "
+                f"{arr.size} valors, esperats {rows * cols}"
+            )
+            continue
+        arr = arr.reshape(rows, cols)
+
+        col0 = int(round((tx0 - minx) / source_resolution))
+        row0 = int(round((maxy - ty1) / source_resolution))
+        col1 = min(source_width, col0 + cols)
+        row1 = min(source_height, row0 + rows)
+        if col0 < 0 or row0 < 0 or col0 >= col1 or row0 >= row1:
+            continue
+
+        source[row0:row1, col0:col1] = arr[: row1 - row0, : col1 - col0]
+        loaded_tiles += 1
+
+    if loaded_tiles == 0:
+        return fallback
+
+    target_width = int(math.ceil(source_width / factor))
+    target_height = int(math.ceil(source_height / factor))
+    padded_height = target_height * factor
+    padded_width = target_width * factor
+
+    padded = np.full(
+        (padded_height, padded_width),
+        TERRAIN_NODATA,
+        dtype=np.int16,
+    )
+    padded[:source_height, :source_width] = source
+
+    blocks = padded.reshape(target_height, factor, target_width, factor)
+    valid = blocks != TERRAIN_NODATA
+    counts = valid.sum(axis=(1, 3))
+    sums = np.where(valid, blocks, 0).astype(np.int64).sum(axis=(1, 3))
+
+    terrain = np.full(
+        (target_height, target_width),
+        TERRAIN_NODATA,
+        dtype=np.int16,
+    )
+    has_data = counts > 0
+    terrain[has_data] = np.rint(sums[has_data] / counts[has_data]).astype(np.int16)
+
+    print(
+        "[Ferrocat] DEM d'anàlisi: "
+        f"{source_resolution:g} m → {target_resolution_m:g} m "
+        f"({loaded_tiles:,} tiles, {target_width:,}×{target_height:,} cel·les)"
+    )
+    return {
+        "crs": manifest.get("crs", "EPSG:25831"),
+        "bbox": [minx, miny, maxx, maxy],
+        "resolution_m": target_resolution_m,
+        "width": target_width,
+        "height": target_height,
+        "nodata": TERRAIN_NODATA,
+        "values": terrain.reshape(-1).astype(int).tolist(),
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -237,6 +370,7 @@ def load_runtime_payload() -> tuple[
         {},
         required=False,
     )
+    terrain_coarse = build_analysis_terrain(terrain_manifest, terrain_coarse)
     road_manifest = load_json(
         ROAD_MANIFEST_JSON,
         {},
