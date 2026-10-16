@@ -1,5 +1,5 @@
 # Versions exactes de dependències directes provades per a Ferrocat 1.0.
-streamlit==1.62.0
+streamlit==1.63.0
 pandas==2.2.3
 pyarrow==25.0.1
 requests==2.34.2
